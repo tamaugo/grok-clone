@@ -39,13 +39,13 @@ roomsApi.put('/:id/members', async (c) => {
   if (!room) return c.json({ error: 'not found' }, 404);
   const { botIds } = await c.req.json<{ botIds: string[] }>();
   const before = new Set(roomMembers(room.id).map((m) => m.id));
-  const next = [...new Set((botIds ?? []).filter((id) => db.prepare("SELECT 1 FROM bots WHERE id=? AND user_id=? AND COALESCE(kind,'agent')<>'room'").get(id, user.id)))];
+  const next = [...new Set((botIds ?? []).filter((id) => db.prepare("SELECT 1 FROM bots WHERE id=? AND user_id=? AND COALESCE(kind,'agent')<>'room' AND COALESCE(hidden,0)=0").get(id, user.id)))];
   db.prepare('UPDATE bots SET members=?, description=?, updated_at=? WHERE id=?').run(JSON.stringify(next), `Group chat with ${next.length} Bots`, now(), room.id);
   const name = (id: string) => (db.prepare('SELECT name FROM bots WHERE id=?').get(id) as any)?.name ?? id;
   const added = next.filter((id) => !before.has(id)).map(name);
   const removed = [...before].filter((id) => !next.includes(id)).map(name);
   if (added.length || removed.length) {
-    appendRow(room.id, 'event', { type: 'event', event: 'bot-message', text: [added.length ? `${added.join(', ')} joined` : '', removed.length ? `${removed.join(', ')} left` : ''].filter(Boolean).join(' · ') });
+    appendRow(room.id, 'event', { type: 'event', event: 'bot-message', text: [added.length ? `${added.join(', ')} joined` : '', removed.length ? `${removed.join(', ')} left` : ''].filter(Boolean).join(' \u00b7 ') });
   }
   hub.emit(user.id, { type: 'roster' });
   return c.json({ ok: true, members: next });

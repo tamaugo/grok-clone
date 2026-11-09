@@ -5,9 +5,12 @@ import type { Routine } from './types.js';
 
 const jobs = new Map<string, Cron>();
 let enqueueFn: ((botId: string, t: any) => void) | null = null;
+let schedulerEnabled = true;
 
-export function initRoutines(enqueue: (botId: string, t: any) => void) {
+export function initRoutines(enqueue: (botId: string, t: any) => void, schedule = true) {
   enqueueFn = enqueue;
+  schedulerEnabled = schedule;
+  if (!schedule) return;
   const all = db.prepare('SELECT * FROM routines WHERE enabled=1').all() as any[];
   for (const r of all) scheduleRoutine({ id: r.id, botId: r.bot_id, name: r.name, prompt: r.prompt, schedule: r.schedule, timezone: r.timezone } as Routine);
   console.log(`[routines] scheduled ${jobs.size}`);
@@ -15,6 +18,7 @@ export function initRoutines(enqueue: (botId: string, t: any) => void) {
 
 export function scheduleRoutine(r: Pick<Routine, 'id' | 'botId' | 'name' | 'prompt' | 'schedule' | 'timezone'>) {
   unscheduleRoutine(r.id);
+  if (!schedulerEnabled) return;
   try {
     const job = new Cron(r.schedule, { timezone: r.timezone || 'UTC', protect: true }, () => runRoutine(r.id));
     jobs.set(r.id, job);

@@ -98,8 +98,24 @@ api.patch('/bots/:id', async (c) => {
 api.delete('/bots/:id', (c) => {
   const b = ownBot(c.get('user').id, c.req.param('id'));
   if (!b) return c.json({ error: 'not found' }, 404);
+  if (b.is_primary) return c.json({ error: 'Make another Bot primary first.' }, 400);
+  interrupt(b.id);
+  expirePending(b.id);
+  for (const sub of db.prepare('SELECT id FROM bots WHERE parent_bot_id=?').all(b.id) as { id: string }[]) {
+    interrupt(sub.id);
+    expirePending(sub.id);
+    stopScreen(sub.id, 'parent bot deleted');
+    db.prepare('DELETE FROM bots WHERE id=?').run(sub.id);
+  }
   for (const r of listRoutines(b.id)) unscheduleRoutine(r.id);
   stopScreen(b.id, 'bot deleted');
+  for (const room of db.prepare("SELECT id, members FROM bots WHERE user_id=? AND kind='room'").all(b.user_id) as { id: string; members: string | null }[]) {
+    const ids: string[] = room.members ? JSON.parse(room.members) : [];
+    if (ids.includes(b.id)) {
+      const next = ids.filter((id) => id !== b.id);
+      db.prepare('UPDATE bots SET members=?, description=?, updated_at=? WHERE id=?').run(JSON.stringify(next), `Group chat with ${next.length} Bots`, now(), room.id);
+    }
+  }
   db.prepare('DELETE FROM bots WHERE id=?').run(b.id);
   hub.emit(c.get('user').id, { type: 'roster' });
   return c.json({ ok: true });
@@ -157,6 +173,7 @@ api.post('/bots/:id/fresh', (c) => {
   const b = ownBot(c.get('user').id, c.req.param('id'));
   if (!b) return c.json({ error: 'not found' }, 404);
   interrupt(b.id);
+  expirePending(b.id);
   clearConversation(b.id);
   emitBot(b.id);
   return c.json({ ok: true });
@@ -286,9 +303,9 @@ api.post('/apps', async (c) => {
   if (typeof app === 'string') return c.json({ error: app }, 400);
   const test = await testApp(app.slug);
   hub.emit(c.get('user').id, { type: 'connections' });
-  // Bots that asked for this app get told it's ready.
+  // Bots that asked for this app get told it's ready once the connection check passes.
   const { botId, seq } = body as { botId?: string; seq?: number };
-  if (botId && seq && ownBot(c.get('user').id, botId)) {
+  if (test.ok && botId && seq && ownBot(c.get('user').id, botId)) {
     const row = getRow(botId, Number(seq));
     if (row?.body.type === 'card' && row.body.card === 'connect') updateRow(botId, row.seq, { ...row.body, status: 'connected' });
     enqueue(botId, { type: 'system', text: `The user connected ${app.name}. Its tools are named mcp__app_${app.slug}__<tool>. Continue with what you were doing.` });

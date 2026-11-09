@@ -45,6 +45,7 @@ async function handle(ctx: ToolCtx, m: any): Promise<object | null> {
         // Claude Code's --permission-prompt-tool contract: reply with allow (+ input) or deny (+ message).
         const a = m.params?.arguments ?? {};
         const r = await requestPermission(ctx.botId, String(a.tool_name ?? ''), a.input, a.tool_use_id ? String(a.tool_use_id) : undefined);
+        if (r.expired) ctx.turn.suppressReply = true;
         const text = JSON.stringify(r.allow ? { behavior: 'allow', updatedInput: a.input ?? {} } : { behavior: 'deny', message: r.message });
         return ok(m.id, { content: [{ type: 'text', text }] });
       }
@@ -53,6 +54,7 @@ async function handle(ctx: ToolCtx, m: any): Promise<object | null> {
       try {
         const res = await tool.impl(m.params?.arguments ?? {}, ctx);
         if (res.endTurn) ctx.turn.suppressReply = true;
+        if (m.params?.name === 'stay_silent') ctx.turn.stayedSilent = true;
         const content: object[] = [{ type: 'text', text: res.output }];
         if (res.image) content.push({ type: 'image', data: res.image.data, mimeType: res.image.mimeType });
         return ok(m.id, { content });

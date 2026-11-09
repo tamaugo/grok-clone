@@ -51,10 +51,11 @@ function describeArgs(args: any): string {
 }
 
 /** Decide whether a tool call may run. Resolves when the user answers (or right away when no approval is needed). */
-export async function requestPermission(botId: string, toolName: string, input: any, toolUseId?: string): Promise<{ allow: boolean; message?: string }> {
+export async function requestPermission(botId: string, toolName: string, input: any, toolUseId?: string): Promise<{ allow: boolean; expired?: boolean; message?: string }> {
   const app = parseAppTool(toolName);
   if (!app) return { allow: true }; // the Bot's own tools, shell, files and computer
   const bot = getBotRow(botId);
+  if (!bot) return { allow: false, expired: true, message: 'This Bot was removed.' };
   const mode = policyFor(bot.user_id, app.slug, app.tool);
   if (mode === 'always_allow') return { allow: true };
   if (mode === 'blocked') return { allow: false, message: 'The user does not allow this action. Do not retry it.' };
@@ -86,8 +87,9 @@ export async function requestPermission(botId: string, toolName: string, input: 
   if (status === 'allowed' || status === 'always') return { allow: true };
   return {
     allow: false,
+    expired: status === 'expired',
     message: status === 'expired'
-      ? 'The user did not approve this in time (or sent a new message instead). Do not retry unless they ask.'
+      ? 'The user did not approve this in time (or sent a new message instead). Stop here without writing a reply.'
       : 'The user declined this action. Do not retry it. Find another way, or tell the user what you could not do.',
   };
 }

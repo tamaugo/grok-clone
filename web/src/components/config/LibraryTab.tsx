@@ -2,29 +2,27 @@ import { useCallback, useEffect, useState } from 'react';
 import type { Bot, LibraryFile } from '@shared/types';
 import { configApi, type LibraryListing } from '../../lib/configApi';
 import { relativeShort } from '../../lib/time';
-import { useStore } from '../../store';
 import { Icon } from '../Icon';
 import { Glyph } from './glyphs';
 import { formatBytes } from './ui';
 
-/** Files the bot saved under /root/grokbot/files/<botId> on its computer. */
+/** Files the bot saved in the library folder of its workspace on the VM. */
 export function LibraryTab({ bot }: { bot: Bot }) {
-  const awake = useStore((s) => s.computer?.status === 'running');
   const [path, setPath] = useState('');
   const [list, setList] = useState<LibraryListing | null>(null);
   const [loading, setLoading] = useState(false);
   const [busyFile, setBusyFile] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async (wake = false) => {
+  const load = useCallback(async () => {
     setLoading(true); setError(null);
-    try { setList(await configApi.files(bot.id, path, wake)); }
+    try { setList(await configApi.files(bot.id, path)); }
     catch (e) { setError((e as Error).message); }
     finally { setLoading(false); }
   }, [bot.id, path]);
 
   useEffect(() => { setPath(''); setList(null); }, [bot.id]);
-  useEffect(() => { load(); }, [load, awake]);
+  useEffect(() => { load(); }, [load]);
 
   const download = async (f: LibraryFile) => {
     const rel = path ? `${path}/${f.name}` : f.name;
@@ -62,15 +60,10 @@ export function LibraryTab({ bot }: { bot: Bot }) {
           </button>
         </div>
         <div className="panel-card">
-          {list?.status === 'asleep' ? (
-            <div className="lib-empty">
-              <div>{bot.name}’s computer is asleep. Wake it to see saved files.</div>
-              <button type="button" className="cfg-btn cfg-btn--secondary" onClick={() => load(true)} disabled={loading}>{loading ? 'Waking…' : 'Wake and show files'}</button>
-            </div>
-          ) : !list && loading ? (
+          {!list && loading ? (
             <div className="panel-empty">Looking for files…</div>
           ) : list?.status === 'error' ? (
-            <div className="panel-empty">Couldn’t reach the computer. {list.error ? <span className="lib-err">{list.error}</span> : null}</div>
+            <div className="panel-empty">Couldn’t read the folder. {list.error ? <span className="lib-err">{list.error}</span> : null}</div>
           ) : !list?.files.length ? (
             <div className="panel-empty panel-empty--center">{path ? 'This folder is empty.' : `Files that ${bot.name} creates, like reports and notes, are kept here.`}</div>
           ) : (

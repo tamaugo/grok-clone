@@ -13,7 +13,7 @@ export function toBot(r: any): Bot {
   if (last) {
     const b = JSON.parse(last.body) as RowBody;
     lastPreview =
-      b.type === 'message' ? b.text : b.type === 'card' ? (b.card === 'approval' ? `Waiting for you: ${b.title}` : b.card === 'question' ? b.question : b.card === 'connect' ? `Connect ${b.toolkitName}` : 'Draft') : b.type === 'event' ? b.text : null;
+      b.type === 'message' ? b.text : b.type === 'card' ? b.question : b.type === 'event' ? b.text : null;
   }
   return {
     id: r.id,
@@ -28,9 +28,6 @@ export function toBot(r: any): Bot {
     kind: r.kind === 'room' ? 'room' : 'agent',
     pinned: !!r.pinned,
     effort: r.effort,
-    voice: r.voice ?? 'luna',
-    voiceSpeed: r.voice_speed ?? 1,
-    voiceLanguage: r.voice_language ?? 'auto',
     generation: r.generation,
     unread: r.unread,
     lastPreview: lastPreview ? lastPreview.slice(0, 140) : null,
@@ -116,24 +113,9 @@ export function listRows(botId: string, opts: { beforeSeq?: number; limit?: numb
 
 export function clearConversation(botId: string) {
   const b = getBotRow(botId);
-  db.prepare('UPDATE bots SET generation = generation + 1, next_seq = 1 WHERE id=?').run(botId);
-  db.prepare('DELETE FROM pending_turns WHERE bot_id=?').run(botId);
+  // A fresh conversation also starts a fresh Claude Code session.
+  db.prepare('UPDATE bots SET generation = generation + 1, next_seq = 1, claude_session = NULL WHERE id=?').run(botId);
   hub.emit(b.user_id, { type: 'cleared', botId, generation: b.generation + 1 });
-}
-
-// ---------- LLM history (Responses API input items) ----------
-
-export function loadHistory(botId: string): any[] {
-  const b = getBotRow(botId);
-  return (db.prepare('SELECT item FROM llm_items WHERE bot_id=? AND generation=? ORDER BY idx ASC').all(botId, b.generation) as any[]).map((r) => JSON.parse(r.item));
-}
-
-export function appendHistory(botId: string, items: any[]) {
-  if (!items.length) return;
-  const b = getBotRow(botId);
-  const start = ((db.prepare('SELECT MAX(idx) m FROM llm_items WHERE bot_id=? AND generation=?').get(botId, b.generation) as any).m ?? -1) + 1;
-  const ins = db.prepare('INSERT INTO llm_items(bot_id,generation,idx,item) VALUES (?,?,?,?)');
-  db.transaction(() => items.forEach((it, i) => ins.run(botId, b.generation, start + i, JSON.stringify(it))))();
 }
 
 // ---------- live state ----------
@@ -169,12 +151,6 @@ export function describeCron(expr: string): string {
   return expr;
 }
 
-function describeEventSlug(schedule: string) {
-  const words = schedule.slice(6).split('_');
-  const app = words.shift() ?? '';
-  return `When ${app.charAt(0) + app.slice(1).toLowerCase()}: ${words.join(' ').toLowerCase()}`;
-}
-
 export function toRoutine(r: any): Routine {
   let nextRunAt: number | null = null;
   try {
@@ -182,7 +158,7 @@ export function toRoutine(r: any): Routine {
   } catch { /* invalid cron */ }
   return {
     id: r.id, botId: r.bot_id, name: r.name, prompt: r.prompt, schedule: r.schedule, timezone: r.timezone,
-    enabled: !!r.enabled, nextRunAt, lastRunAt: r.last_run_at, description: r.schedule.startsWith('event:') ? describeEventSlug(r.schedule) : describeCron(r.schedule),
+    enabled: !!r.enabled, nextRunAt, lastRunAt: r.last_run_at, description: describeCron(r.schedule),
   };
 }
 

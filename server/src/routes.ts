@@ -1,20 +1,14 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { db, now } from './db.js';
-import { env } from './env.js';
 import { newId } from './lib/ids.js';
 import { hub } from './lib/hub.js';
-import { createSession, destroySession, requireUser, userFromCookieHeader, type AuthVars } from './lib/auth.js';
+import { ensureLocalUser, LOCAL_USER, requireUser, type AuthVars } from './lib/auth.js';
 import { allLive, appendRow, clearConversation, emitBot, getBot, getBotRow, getRow, listBots, listRoutines, listRows, listTasks, toRoutine, updateRow } from './store.js';
-import { enqueue, interrupt, resolveApproval } from './agent/loop.js';
-import { computerState, ensureComputer, refreshComputer, suspendComputer } from './computer.js';
-import { orgo } from './orgo.js';
-import { catalog, connectedToolkits, deleteConnection, disconnect, googleProfile, startConnect, startGoogleLogin, toolkitInfo } from './composio.js';
+import { enqueue, interrupt } from './agent/loop.js';
 import { runRoutine, scheduleRoutine, unscheduleRoutine } from './routines.js';
-import { deleteEventTrigger } from './triggers.js';
 import { dispatchRoomMessage } from './agent/rooms.js';
-import { voiceApi } from './voice.js';
-import type { AvatarColor, AvatarShape, Toolkit } from './types.js';
+import type { AvatarColor, AvatarShape } from './types.js';
 
 export const api = new Hono<AuthVars>();
 
@@ -38,66 +32,16 @@ function createBot(userId: string, b: { name: string; label?: string; descriptio
   return getBot(id)!;
 }
 
-function findOrCreateUser(email: string, name?: string, preferId?: string) {
-  const existing = db.prepare('SELECT * FROM users WHERE lower(email)=lower(?)').get(email) as any;
-  if (existing) return { id: existing.id as string, isNew: false };
-  const id = preferId ?? newId('usr');
-  db.prepare('INSERT INTO users(id,email,name,created_at) VALUES (?,?,?,?)').run(id, email, name ?? email.split('@')[0], now());
-  createBot(id, { name: 'Quinn', label: 'Chief of Staff', description: 'Your main point of contact. Checks in proactively and coordinates work with your other Bots.', avatarShape: 'blob', avatarColor: 'black', isPrimary: true });
-  return { id, isNew: true };
+/** First start: create the local user and their primary Bot. */
+export function setupLocalUser() {
+  if (!ensureLocalUser()) return;
+  createBot(LOCAL_USER.id, { name: 'Quinn', label: 'Chief of Staff', description: 'Your main point of contact. Checks in proactively and coordinates work with your other Bots.', avatarShape: 'blob', avatarColor: 'black', isPrimary: true });
 }
 
-// ---------- auth ----------
+// Single user, no sign-in: the network (Tailscale) is the access control.
+api.use('/*', requireUser);
 
-api.get('/auth/me', (c) => {
-  const user = userFromCookieHeader(c.req.header('cookie'));
-  return c.json({ user, devLogin: env.devLogin });
-});
-
-api.get('/auth/google/start', async (c) => {
-  const attemptId = newId('login');
-  const provisional = newId('usr');
-  const cb = `${env.serverUrl}/api/auth/google/callback?attempt=${attemptId}`;
-  const { redirectUrl, connectedAccountId } = await startGoogleLogin(provisional, cb);
-  db.prepare('INSERT INTO login_attempts(id,provisional_user_id,connected_account_id,created_at) VALUES (?,?,?,?)').run(attemptId, provisional, connectedAccountId ?? null, now());
-  return c.redirect(redirectUrl);
-});
-
-api.get('/auth/google/callback', async (c) => {
-  const attempt = db.prepare('SELECT * FROM login_attempts WHERE id=?').get(c.req.query('attempt') ?? '') as any;
-  const caId = c.req.query('connected_account_id') ?? attempt?.connected_account_id;
-  if (!attempt || c.req.query('status') === 'failed' || !caId) return c.redirect(`${env.appUrl}/?login=failed`);
-  if (attempt.connected_account_id && caId !== attempt.connected_account_id) return c.redirect(`${env.appUrl}/?login=failed`);
-  db.prepare('DELETE FROM login_attempts WHERE id=?').run(attempt.id);
-  try {
-    const profile = await googleProfile(caId);
-    const { id, isNew } = findOrCreateUser(profile.email, profile.name, attempt.provisional_user_id);
-    // Existing user: the Gmail connection made for sign-in belongs to a throwaway id; remove it.
-    if (!isNew && id !== attempt.provisional_user_id) await deleteConnection(caId);
-    createSession(c, id);
-    return c.redirect(`${env.appUrl}/`);
-  } catch (e: any) {
-    console.error('[auth] google callback', e);
-    return c.redirect(`${env.appUrl}/?login=failed`);
-  }
-});
-
-api.post('/auth/dev', async (c) => {
-  if (!env.devLogin) return c.json({ error: 'disabled' }, 403);
-  const { email, name } = await c.req.json<{ email: string; name?: string }>();
-  if (!email?.includes('@')) return c.json({ error: 'email required' }, 400);
-  const { id } = findOrCreateUser(email, name);
-  createSession(c, id);
-  return c.json({ ok: true });
-});
-
-api.post('/auth/logout', (c) => { destroySession(c); return c.json({ ok: true }); });
-
-// everything below requires a session
-api.use('/*', async (c, next) => {
-  if (c.req.path.startsWith('/api/auth/') || c.req.path.startsWith('/api/apps/callback') || c.req.path === '/api/health') return next();
-  return requireUser(c, next);
-});
+api.get('/auth/me', (c) => c.json({ user: c.get('user'), devLogin: false }));
 
 // ---------- events (SSE) ----------
 
@@ -139,7 +83,7 @@ api.patch('/bots/:id', async (c) => {
   const b = ownBot(c.get('user').id, c.req.param('id'));
   if (!b) return c.json({ error: 'not found' }, 404);
   const p = await c.req.json();
-  const cols: Record<string, string> = { name: 'name', label: 'label', description: 'description', instructions: 'instructions', avatarShape: 'avatar_shape', avatarColor: 'avatar_color', mode: 'mode', effort: 'effort', pinned: 'pinned', voice: 'voice', voiceSpeed: 'voice_speed', voiceLanguage: 'voice_language' };
+  const cols: Record<string, string> = { name: 'name', label: 'label', description: 'description', instructions: 'instructions', avatarShape: 'avatar_shape', avatarColor: 'avatar_color', mode: 'mode', effort: 'effort', pinned: 'pinned' };
   for (const [k, col] of Object.entries(cols)) {
     if (p[k] !== undefined) db.prepare(`UPDATE bots SET ${col}=?, updated_at=? WHERE id=?`).run(typeof p[k] === 'boolean' ? (p[k] ? 1 : 0) : p[k], now(), b.id);
   }
@@ -151,7 +95,6 @@ api.delete('/bots/:id', (c) => {
   const b = ownBot(c.get('user').id, c.req.param('id'));
   if (!b) return c.json({ error: 'not found' }, 404);
   for (const r of listRoutines(b.id)) unscheduleRoutine(r.id);
-  db.prepare('DELETE FROM screens WHERE bot_id=?').run(b.id);
   db.prepare('DELETE FROM bots WHERE id=?').run(b.id);
   hub.emit(c.get('user').id, { type: 'roster' });
   return c.json({ ok: true });
@@ -212,12 +155,6 @@ api.post('/bots/:id/fresh', (c) => {
   return c.json({ ok: true });
 });
 
-api.post('/approvals/:id', async (c) => {
-  const { decision } = await c.req.json<{ decision: 'allow' | 'always' | 'deny' }>();
-  try { resolveApproval(c.get('user').id, c.req.param('id'), decision); } catch { return c.json({ error: 'not found' }, 404); }
-  return c.json({ ok: true });
-});
-
 api.post('/bots/:id/cards/:seq/answer', async (c) => {
   const b = ownBot(c.get('user').id, c.req.param('id'));
   if (!b) return c.json({ error: 'not found' }, 404);
@@ -235,9 +172,7 @@ api.post('/bots/:id/cards/:seq/dismiss', (c) => {
   if (!b) return c.json({ error: 'not found' }, 404);
   const row = getRow(b.id, Number(c.req.param('seq')));
   if (!row || row.body.type !== 'card') return c.json({ error: 'not a card' }, 400);
-  const body: any = { ...row.body, status: row.body.card === 'connect' ? 'skipped' : 'dismissed' };
-  updateRow(b.id, row.seq, body);
-  if (row.body.card === 'connect') enqueue(b.id, { type: 'system', text: `The user skipped connecting ${row.body.toolkitName}. Continue without it.` });
+  updateRow(b.id, row.seq, { ...row.body, status: 'dismissed' } as any);
   return c.json({ ok: true });
 });
 
@@ -270,7 +205,6 @@ api.delete('/routines/:id', async (c) => {
   const r = db.prepare('SELECT r.* FROM routines r JOIN bots b ON b.id=r.bot_id WHERE r.id=? AND b.user_id=?').get(c.req.param('id'), c.get('user').id) as any;
   if (!r) return c.json({ error: 'not found' }, 404);
   unscheduleRoutine(r.id);
-  await deleteEventTrigger(r.id);
   db.prepare('DELETE FROM routines WHERE id=?').run(r.id);
   hub.emit(c.get('user').id, { type: 'routines', botId: r.bot_id });
   return c.json({ ok: true });
@@ -297,99 +231,3 @@ api.delete('/memories/:id', (c) => {
   db.prepare('DELETE FROM memories WHERE id=? AND bot_id IN (SELECT id FROM bots WHERE user_id=?)').run(c.req.param('id'), c.get('user').id);
   return c.json({ ok: true });
 });
-
-// ---------- computer ----------
-
-api.get('/computer', async (c) => c.json({ computer: await refreshComputer(c.get('user').id) }));
-
-api.post('/computer/ensure', (c) => {
-  const userId = c.get('user').id;
-  ensureComputer(userId).catch((e) => console.warn('[computer] ensure failed', e.message));
-  return c.json({ computer: computerState(userId) });
-});
-
-api.post('/computer/suspend', async (c) => {
-  await suspendComputer(c.get('user').id);
-  return c.json({ computer: computerState(c.get('user').id) });
-});
-
-api.get('/bots/:id/screenshot', async (c) => {
-  const user = c.get('user');
-  const b = ownBot(user.id, c.req.param('id'));
-  if (!b) return c.json({ error: 'not found' }, 404);
-  const comp = db.prepare("SELECT orgo_id FROM computers WHERE user_id=? AND status='running'").get(user.id) as any;
-  const scr = db.prepare('SELECT screen_id FROM screens WHERE bot_id=?').get(b.id) as any;
-  if (!comp?.orgo_id || !scr) return c.body(null, 204);
-  try {
-    const s = await orgo.screenshot(comp.orgo_id, scr.screen_id);
-    const b64 = s.image.replace(/^data:[^,]+,/, '');
-    return c.body(Buffer.from(b64, 'base64'), 200, { 'Content-Type': s.mime_type ?? 'image/jpeg', 'Cache-Control': 'no-store' });
-  } catch {
-    return c.body(null, 204);
-  }
-});
-
-// ---------- apps (Composio marketplace) ----------
-
-api.get('/apps', async (c) => {
-  const user = c.get('user');
-  const search = (c.req.query('search') ?? '').toLowerCase();
-  const category = c.req.query('category') ?? '';
-  const [all, connected] = await Promise.all([catalog(), connectedToolkits(user.id).catch(() => new Set<string>())]);
-  let items: Toolkit[] = all.map((t) => ({ ...t, connected: connected.has(t.slug) }));
-  if (search) items = items.filter((t) => t.name.toLowerCase().includes(search) || t.slug.includes(search) || t.description?.toLowerCase().includes(search));
-  if (category) items = items.filter((t) => t.categories.some((x) => x.toLowerCase() === category.toLowerCase()));
-  const categories = [...new Set(all.flatMap((t) => t.categories))].sort();
-  const connectedApps = all.filter((t) => connected.has(t.slug)).map((t) => ({ ...t, connected: true }));
-  return c.json({ apps: items.slice(0, Number(c.req.query('limit') ?? 120)), connected: [...connected], connectedApps, categories, total: items.length });
-});
-
-api.post('/apps/:slug/connect', async (c) => {
-  const user = c.get('user');
-  const slug = c.req.param('slug');
-  const { botId, seq } = await c.req.json<{ botId?: string; seq?: number }>().catch(() => ({} as any));
-  const cb = new URL(`${env.serverUrl}/api/apps/callback`);
-  cb.searchParams.set('slug', slug);
-  if (botId) cb.searchParams.set('bot', botId);
-  if (seq) cb.searchParams.set('seq', String(seq));
-  const r = await startConnect(user.id, slug, cb.toString());
-  return c.json(r);
-});
-
-api.get('/apps/callback', async (c) => {
-  const userId = userFromCookieHeader(c.req.header('cookie'))?.id ?? '';
-  const slug = c.req.query('slug') ?? '';
-  const botId = c.req.query('bot');
-  const seq = Number(c.req.query('seq') ?? 0);
-  const ok = c.req.query('status') !== 'failed';
-  const userExists = db.prepare('SELECT 1 FROM users WHERE id=?').get(userId);
-  if (userExists && ok) {
-    const connected = await connectedToolkits(userId).catch(() => new Set<string>());
-    if (connected.has(slug)) {
-      hub.emit(userId, { type: 'connections' });
-      if (botId && ownBot(userId, botId)) {
-        const info = await toolkitInfo(slug);
-        if (seq) {
-          const row = getRow(botId, seq);
-          if (row?.body.type === 'card' && row.body.card === 'connect') updateRow(botId, seq, { ...row.body, status: 'connected' });
-        }
-        enqueue(botId, { type: 'system', text: `The user connected ${info?.name ?? slug}. Continue with what you were doing.` });
-      }
-    }
-  }
-  return c.html(`<!doctype html><meta charset="utf-8"><title>Connected</title><body style="font-family:system-ui;padding:40px;text-align:center">${ok ? 'Connected. You can close this window.' : 'Connection failed.'}<script>try{window.opener&&window.opener.postMessage({type:'grokbot-connected',slug:${JSON.stringify(slug)},ok:${ok}},'*')}catch(e){};setTimeout(()=>window.close(),800)</script></body>`);
-});
-
-api.delete('/apps/:slug', async (c) => {
-  await disconnect(c.get('user').id, c.req.param('slug'));
-  hub.emit(c.get('user').id, { type: 'connections' });
-  return c.json({ ok: true });
-});
-
-api.get('/policies', (c) => c.json({ policies: db.prepare('SELECT tool, mode FROM policies WHERE user_id=?').all(c.get('user').id) }));
-api.delete('/policies/:tool', (c) => {
-  db.prepare('DELETE FROM policies WHERE user_id=? AND tool=?').run(c.get('user').id, c.req.param('tool'));
-  return c.json({ ok: true });
-});
-
-api.route('/voice', voiceApi);

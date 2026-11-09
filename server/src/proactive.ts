@@ -85,12 +85,10 @@ export function fireCheckin(userId: string, silentStreak = 0, force = false) {
   const needsInput = db.prepare("SELECT b.name, t.title FROM tasks t JOIN bots b ON b.id=t.bot_id WHERE b.user_id=? AND t.state='needs_input' LIMIT 10").all(userId) as any[];
   const since = now() - 12 * 3600_000;
   const routineRuns = db.prepare("SELECT b.name bot, r.name FROM routines r JOIN bots b ON b.id=r.bot_id WHERE b.user_id=? AND r.last_run_at > ?").all(userId, since) as any[];
-  const pendingApprovals = db.prepare("SELECT b.name bot, a.tool FROM approvals a JOIN bots b ON b.id=a.bot_id WHERE b.user_id=? AND a.status='pending'").all(userId) as any[];
   const otherBots = db.prepare("SELECT name, label FROM bots WHERE user_id=? AND is_primary=0").all(userId) as any[];
 
   const context = [
     needsInput.length ? `Tasks waiting on the user: ${needsInput.map((t) => `${t.title} (${t.name})`).join('; ')}` : 'No tasks waiting on the user.',
-    pendingApprovals.length ? `Pending approvals: ${pendingApprovals.map((a) => `${a.bot}: ${a.tool}`).join('; ')}` : 'No pending approvals.',
     routineRuns.length ? `Routines that ran in the last 12h: ${routineRuns.map((r) => `${r.name} (${r.bot})`).join('; ')}` : 'No routines ran in the last 12h.',
     otherBots.length ? `Team: ${otherBots.map((b) => `${b.name}${b.label ? ` (${b.label})` : ''}`).join(', ')}` : '',
   ].filter(Boolean).join('\n');
@@ -98,7 +96,7 @@ export function fireCheckin(userId: string, silentStreak = 0, force = false) {
   enqueueFn(primary.id, {
     type: 'system',
     text:
-      `[check-in] Scheduled proactive check-in. Look at what's going on (use connected apps like calendar or email if useful, read your memories, check on other Bots if needed). ` +
+      `[check-in] Scheduled proactive check-in. Look at what's going on (read your memories, check on other Bots and your working folder if needed). ` +
       `If there is something genuinely useful to tell the user (a decision they owe, something that changed, today's schedule, a finished result), send ONE short message. ` +
       `If not, call stay_silent and send nothing.${silentStreak >= 3 ? ' You have stayed silent several times in a row; that is fine.' : ''}\n${context}`,
   });

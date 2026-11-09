@@ -1,8 +1,8 @@
 import { create } from 'zustand';
-import type { Bot, ComputerState, LiveState, Routine, Row, ServerEvent, User } from '@shared/types';
+import type { Bot, LiveState, Routine, Row, ServerEvent, User } from '@shared/types';
 import { api } from './lib/api';
 
-export type ModalKind = 'create' | 'search' | 'apps' | 'group' | null;
+export type ModalKind = 'create' | 'search' | 'group' | null;
 
 interface Transcript { generation: number; bySeq: Record<number, Row>; loaded: boolean }
 
@@ -16,22 +16,17 @@ interface State {
   selectedBotId: string | null;
   transcripts: Record<string, Transcript>;
   routines: Record<string, Routine[]>;
-  computer: ComputerState | null;
-  /** Bumped on every `connections` event so open views can refetch. */
-  connectionsVersion: number;
   sseConnected: boolean;
 
   detailsOpen: boolean;
   sidebarCollapsed: boolean;
   modal: ModalKind;
-  viewerOpen: boolean;
 
   checkAuth(): Promise<void>;
   loadBots(): Promise<void>;
   selectBot(id: string): void;
   loadRows(id: string): Promise<void>;
   loadRoutines(id: string): Promise<void>;
-  loadComputer(): Promise<void>;
   upsertRows(botId: string, generation: number, rows: Row[]): void;
   handleEvent(ev: ServerEvent): void;
   setModal(m: ModalKind): void;
@@ -53,13 +48,10 @@ export const useStore = create<State>((set, get) => ({
   selectedBotId: lsGet(LS_SELECTED),
   transcripts: {},
   routines: {},
-  computer: null,
-  connectionsVersion: 0,
   sseConnected: false,
   detailsOpen: lsGet(LS_DETAILS) !== '0',
   sidebarCollapsed: lsGet(LS_SIDEBAR) === '1',
   modal: null,
-  viewerOpen: false,
 
   async checkAuth() {
     try {
@@ -102,19 +94,11 @@ export const useStore = create<State>((set, get) => ({
       for (const r of Object.values(prev.bySeq)) if (!bySeq[r.seq] || bySeq[r.seq].updatedSeq < r.updatedSeq) bySeq[r.seq] = r;
     }
     set((s) => ({ transcripts: { ...s.transcripts, [id]: { generation, bySeq, loaded: true } } }));
-    if (import.meta.env.DEV && new URLSearchParams(location.search).has('fixtures')) {
-      import('./dev/fixtures').then((m) => m.injectFixtures());
-    }
   },
 
   async loadRoutines(id) {
     const { routines } = await api.routines(id);
     set((s) => ({ routines: { ...s.routines, [id]: routines } }));
-  },
-
-  async loadComputer() {
-    const { computer } = await api.computer();
-    set({ computer });
   },
 
   upsertRows(botId, generation, rows) {
@@ -156,9 +140,6 @@ export const useStore = create<State>((set, get) => ({
         set((st) => ({ bots: exists ? st.bots.map((b) => (b.id === ev.bot.id ? ev.bot : b)) : [...st.bots, ev.bot] }));
         return;
       }
-      case 'computer':
-        set({ computer: ev.state });
-        return;
       case 'routines':
         if (s.routines[ev.botId] || ev.botId === s.selectedBotId) s.loadRoutines(ev.botId).catch(console.error);
         return;
@@ -166,9 +147,6 @@ export const useStore = create<State>((set, get) => ({
       case 'memories':
         // Picked up by configStore.ts (Tasks view, Library/Tasks tabs, bot settings).
         window.dispatchEvent(new CustomEvent('grokbot:event', { detail: ev }));
-        return;
-      case 'connections':
-        set((st) => ({ connectionsVersion: st.connectionsVersion + 1 }));
         return;
     }
   },

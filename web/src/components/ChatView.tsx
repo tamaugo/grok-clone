@@ -8,7 +8,6 @@ import { Composer } from './Composer';
 import { Icon } from './Icon';
 import { Menu } from './Menu';
 import { Transcript } from './Transcript';
-import { VoiceCallBar } from './VoiceCallBar';
 
 export function ChatView() {
   const bot = useSelectedBot();
@@ -33,7 +32,6 @@ export function ChatView() {
   return (
     <main className="chat" style={botVars(bot.avatarColor)}>
       <Transcript bot={bot} rows={rows} live={live} loaded={!!transcript?.loaded} />
-      <VoiceCallBar />
       <Composer bot={bot} running={!!live?.isRunning} />
       <header className="chat__header">
         <span className="chat__pill-anchor">
@@ -47,7 +45,6 @@ export function ChatView() {
               onClose={() => setMenu(false)}
               items={[
                 { label: detailsOpen ? 'Hide details' : 'Show details', hint: '⇧⌘,', onSelect: () => set({ detailsOpen: !detailsOpen }) },
-                { label: 'Open computer', onSelect: () => set({ viewerOpen: true }) },
                 { label: 'New conversation', onSelect: () => api.fresh(bot.id).then(() => flash('Started a new conversation')).catch((e) => flash(e.message)) },
                 { label: 'Bot settings', onSelect: () => useConfigUI.getState().openBotSettings(bot.id) },
               ]}

@@ -1,42 +1,23 @@
-import type { Context, MiddlewareHandler } from 'hono';
-import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
+import type { MiddlewareHandler } from 'hono';
 import { db, now } from '../db.js';
-import { token } from './ids.js';
 import type { User } from '../types.js';
 
-const COOKIE = 'grokbot_session';
-const TTL_MS = 30 * 24 * 3600 * 1000;
+/**
+ * Single-user install: there is no sign-in. Access control is the network
+ * (the server listens on localhost and is reachable only through Tailscale).
+ */
+export const LOCAL_USER: User = { id: 'usr_local', email: 'local@grokbot', name: process.env.GROKBOT_USER_NAME ?? 'You', avatarUrl: null };
 
 export type AuthVars = { Variables: { user: User } };
 
-export function createSession(c: Context, userId: string) {
-  const t = token();
-  db.prepare('INSERT INTO auth_sessions(token,user_id,created_at,expires_at) VALUES (?,?,?,?)').run(t, userId, now(), now() + TTL_MS);
-  setCookie(c, COOKIE, t, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: TTL_MS / 1000 });
-}
-
-export function destroySession(c: Context) {
-  const t = getCookie(c, COOKIE);
-  if (t) db.prepare('DELETE FROM auth_sessions WHERE token=?').run(t);
-  deleteCookie(c, COOKIE, { path: '/' });
-}
-
-export function userFromToken(t: string | undefined): User | null {
-  if (!t) return null;
-  const r = db
-    .prepare('SELECT u.* FROM auth_sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires_at>?')
-    .get(t, now()) as any;
-  return r ? { id: r.id, email: r.email, name: r.name, avatarUrl: r.avatar_url } : null;
-}
-
-export function userFromCookieHeader(cookieHeader: string | undefined): User | null {
-  const m = cookieHeader?.split(/;\s*/).find((p) => p.startsWith(`${COOKIE}=`));
-  return userFromToken(m ? decodeURIComponent(m.slice(COOKIE.length + 1)) : undefined);
+/** Create the local user on first start. Returns true if it was just created. */
+export function ensureLocalUser(): boolean {
+  if (db.prepare('SELECT 1 FROM users WHERE id=?').get(LOCAL_USER.id)) return false;
+  db.prepare('INSERT INTO users(id,email,name,created_at) VALUES (?,?,?,?)').run(LOCAL_USER.id, LOCAL_USER.email, LOCAL_USER.name, now());
+  return true;
 }
 
 export const requireUser: MiddlewareHandler<AuthVars> = async (c, next) => {
-  const u = userFromToken(getCookie(c, COOKIE));
-  if (!u) return c.json({ error: 'unauthenticated' }, 401);
-  c.set('user', u);
+  c.set('user', LOCAL_USER);
   await next();
 };

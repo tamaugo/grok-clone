@@ -4,7 +4,6 @@ import { TasksIsland } from './config/TasksView';
 import type { Bot } from '@shared/types';
 import { BotAvatarFor } from '../avatar/BotAvatar';
 import { displayName, useStore } from '../store';
-import { api } from '../lib/api';
 import { Icon } from './Icon';
 import { Menu } from './Menu';
 
@@ -60,7 +59,6 @@ export function Sidebar() {
   const selectBot = useCallback((id: string) => { useConfigUI.getState().setView('chat'); storeSelectBot(id); }, [storeSelectBot]);
   const setModal = useStore((s) => s.setModal);
   const [accountMenu, setAccountMenu] = useState(false);
-  const logout = async () => { await api.logout().catch(() => {}); location.reload(); };
 
   const primary = bots.find((b) => b.isPrimary);
   const others = bots.filter((b) => !b.isPrimary).sort((a, b) => b.lastActivityAt - a.lastActivityAt);
@@ -125,9 +123,9 @@ export function Sidebar() {
         <div className="sidebar__fade" />
         {!collapsed && (
           <div className="account">
-            <button type="button" className="account__btn" onClick={() => setAccountMenu(!accountMenu)} aria-haspopup="menu" aria-expanded={accountMenu} title={user?.email}>
+            <button type="button" className="account__btn" onClick={() => setAccountMenu(!accountMenu)} aria-haspopup="menu" aria-expanded={accountMenu} title={user?.name}>
               <span className="account__initials">{initials(user?.name ?? user?.email ?? '')}</span>
-              <span className="account__name">{user?.name ?? user?.email}</span>
+              <span className="account__name">{user?.name}</span>
             </button>
             {accountMenu && (
               <Menu
@@ -135,18 +133,11 @@ export function Sidebar() {
                 onClose={() => setAccountMenu(false)}
                 items={[
                   { label: 'Settings', hint: '⌘,', onSelect: () => useConfigUI.getState().openAppSettings() },
-                  { label: 'Connect apps', onSelect: () => setModal('apps') },
-                  { label: 'Log out', danger: true, onSelect: logout },
                 ]}
-              >
-                <div className="menu__header">{user?.email}</div>
-              </Menu>
+              />
             )}
           </div>
         )}
-        <button type="button" className="icon-btn icon-btn--bordered" onClick={() => setModal('apps')} aria-label="Connect apps" title="Connect apps">
-          <Icon name="apps" />
-        </button>
       </div>
     </aside>
   );

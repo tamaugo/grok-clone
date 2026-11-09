@@ -15,7 +15,6 @@ export function startEvents(): () => void {
   const resync = () => {
     const st = useStore.getState();
     st.loadBots().catch(() => {});
-    st.loadComputer().catch(() => {});
     if (st.selectedBotId) { st.loadRows(st.selectedBotId).catch(() => {}); st.loadRoutines(st.selectedBotId).catch(() => {}); }
   };
 

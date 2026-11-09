@@ -1,13 +1,18 @@
 {
   "name": "grokbot",
   "private": true,
-  "description": "Grokbot: internal reverse-engineering clone of xAI Grok Bot. Internal research use only; do not distribute.",
-  "workspaces": ["server", "web"],
+  "description": "Self-hosted multi-Bot team running on the Claude Code CLI.",
+  "workspaces": [
+    "server",
+    "web"
+  ],
   "scripts": {
     "dev": "npm run dev -w server & npm run dev -w web",
     "build": "npm run build -w web && npm run build -w server",
     "start": "npm run start -w server",
     "typecheck": "npm run typecheck -w server && npm run typecheck -w web"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  }
 }

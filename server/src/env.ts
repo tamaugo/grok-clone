@@ -1,25 +1,26 @@
-function req(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env ${name}`);
-  return v;
-}
+import os from 'node:os';
+import path from 'node:path';
+
+const num = (v: string | undefined, d: number) => (v !== undefined && v !== '' && Number.isFinite(Number(v)) ? Number(v) : d);
 
 export const env = {
-  port: Number(process.env.PORT ?? 8787),
-  appUrl: process.env.APP_URL ?? 'http://localhost:5173',
-  /** Public URL of this server, used for OAuth callbacks. */
-  serverUrl: process.env.SERVER_URL ?? `http://localhost:${process.env.PORT ?? 8787}`,
-  xaiKey: req('XAI_API_KEY'),
-  xaiModel: process.env.XAI_MODEL ?? 'grok-4.7',
-  composioKey: req('COMPOSIO_API_KEY'),
-  orgoKey: req('ORGO_API_KEY'),
-  /** Orgo workspace that holds every user's box. */
-  orgoWorkspaceId: process.env.ORGO_WORKSPACE_ID ?? '',
-  /** Orgo box size for new users. */
-  orgoRamGb: Number(process.env.ORGO_RAM_GB ?? 8),
-  orgoCpu: Number(process.env.ORGO_CPU ?? 2),
-  orgoResolution: process.env.ORGO_RESOLUTION ?? '1280x800x24',
-  sessionSecret: req('SESSION_SECRET'),
-  devLogin: process.env.DEV_LOGIN === '1',
+  port: num(process.env.PORT, 8787),
+  /** Only listen on localhost by default; Tailscale Serve exposes it to the tailnet. */
+  host: process.env.HOST ?? '127.0.0.1',
   dbPath: process.env.DB_PATH ?? new URL('../../data/grokbot.db', import.meta.url).pathname,
+
+  /** Claude Code CLI used for every Bot turn (logged in with your subscription). */
+  claudeBin: process.env.CLAUDE_BIN ?? path.join(os.homedir(), '.local/bin/claude'),
+  /** Optional model alias for every Bot (e.g. "sonnet", "opus"); empty = your account's default. */
+  claudeModel: process.env.CLAUDE_MODEL ?? '',
+  /** Each Bot works in its own folder under here. */
+  botsRoot: process.env.BOTS_ROOT ?? path.join(os.homedir(), 'bots'),
+
+  // RAM safeguards: each running Bot is a Claude Code process (~300-500 MB).
+  /** Max Bots working at the same time; the rest wait in line. */
+  maxConcurrent: num(process.env.GROKBOT_MAX_CONCURRENT, 2),
+  /** Don't start another Bot unless at least this much memory is available. */
+  minFreeMb: num(process.env.GROKBOT_MIN_FREE_MB, 600),
+  /** Kill a single turn that runs longer than this. */
+  turnTimeoutMin: num(process.env.GROKBOT_TURN_TIMEOUT_MIN, 45),
 };

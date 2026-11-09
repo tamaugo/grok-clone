@@ -1,4 +1,4 @@
-import type { Bot, ComputerState, LibraryFile, Memory, Routine, Skill, Task, Toolkit } from '@shared/types';
+import type { Bot, LibraryFile, Memory, Routine, Skill, Task } from '@shared/types';
 import { ApiError } from './api';
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -21,16 +21,9 @@ export interface BotSettingsBundle {
   skills: Skill[];
   routines: Routine[];
   tasks: Task[];
-  memory: { lastConsolidatedAt: number | null; historyChars: number; compactAtChars: number; lastCompaction: { method: string; created_at: number } | null };
 }
 
-export interface LibraryListing { status: 'ok' | 'asleep' | 'error'; path: string; files: LibraryFile[]; error?: string }
-
-export interface ComputerDetails {
-  computer: ComputerState;
-  screens: { botId: string; screenId: string; lastUsedAt: number }[];
-  hibernation: { idleMinutes: number; viewers: number; dryRun: boolean };
-}
+export interface LibraryListing { status: 'ok' | 'error'; path: string; files: LibraryFile[]; error?: string }
 
 export type BotPatch = Partial<Pick<Bot, 'name' | 'label' | 'description' | 'instructions' | 'avatarShape' | 'avatarColor' | 'effort' | 'mode'>>;
 
@@ -54,17 +47,6 @@ export const configApi = {
   tasks: () => req<{ tasks: Task[] }>('GET', '/tasks'),
   botTasks: (botId: string) => req<{ tasks: Task[] }>('GET', `/bots/${botId}/tasks`),
 
-  files: (botId: string, path = '', wake = false) => req<LibraryListing>('GET', `/bots/${botId}/files?path=${encodeURIComponent(path)}${wake ? '&wake=1' : ''}`),
+  files: (botId: string, path = '') => req<LibraryListing>('GET', `/bots/${botId}/files?path=${encodeURIComponent(path)}`),
   downloadFile: (botId: string, path: string) => req<{ url: string }>('POST', `/bots/${botId}/files/download`, { path }),
-
-  computerDetails: () => req<ComputerDetails>('GET', '/computer/details'),
-  wake: () => req<{ computer: ComputerState }>('POST', '/computer/ensure'),
-  sleep: () => req<{ computer: ComputerState }>('POST', '/computer/suspend'),
-  resetScreen: (botId: string) => req<{ ok: true }>('POST', `/bots/${botId}/screen/reset`),
-
-  policies: () => req<{ policies: { tool: string; mode: string }[] }>('GET', '/policies'),
-  deletePolicy: (tool: string) => req<{ ok: true }>('DELETE', `/policies/${encodeURIComponent(tool)}`),
-
-  connectedApps: () => req<{ connectedApps?: Toolkit[]; connected: string[] }>('GET', '/apps?limit=1'),
-  logout: () => req<{ ok: true }>('POST', '/auth/logout'),
 };

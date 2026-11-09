@@ -2,11 +2,8 @@ import { useEffect } from 'react';
 import { startEvents } from './lib/events';
 import { useStore } from './store';
 import { ChatView } from './components/ChatView';
-import { ComputerViewer } from './components/ComputerViewer';
 import { DetailsPanel } from './components/DetailsPanel';
 import { Sidebar } from './components/Sidebar';
-import { SignIn } from './components/SignIn';
-import { ConnectAppsModal } from './components/modals/ConnectAppsModal';
 import { CreateBotModal } from './components/modals/CreateBotModal';
 import { CreateGroupModal } from './components/modals/CreateGroupModal';
 import { SearchModal } from './components/modals/SearchModal';
@@ -17,7 +14,6 @@ import { useConfigUI } from './configStore';
 function Shell() {
   const detailsOpen = useStore((s) => s.detailsOpen);
   const modal = useStore((s) => s.modal);
-  const viewerOpen = useStore((s) => s.viewerOpen);
   const collapsed = useStore((s) => s.sidebarCollapsed);
   const hasBot = useStore((s) => !!s.selectedBotId);
   const view = useConfigUI((s) => s.view);
@@ -25,17 +21,7 @@ function Shell() {
   useEffect(() => {
     const st = useStore.getState();
     st.loadBots().catch(console.error);
-    st.loadComputer().catch(console.error);
-    const stop = startEvents();
-    // OAuth popups post back here; refresh connection-dependent views and the open transcript.
-    const onMsg = (e: MessageEvent) => {
-      if ((e.data as { type?: string })?.type !== 'grokbot-connected') return;
-      const s = useStore.getState();
-      s.set({ connectionsVersion: s.connectionsVersion + 1 });
-      if (s.selectedBotId) s.loadRows(s.selectedBotId).catch(() => {});
-    };
-    window.addEventListener('message', onMsg);
-    return () => { stop(); window.removeEventListener('message', onMsg); };
+    return startEvents();
   }, []);
 
   // Global shortcuts: ⌘K search, ⌘B sidebar, ⇧⌘, details, ⌘N new bot.
@@ -62,8 +48,6 @@ function Shell() {
       {modal === 'create' && <CreateBotModal />}
       {modal === 'group' && <CreateGroupModal />}
       {modal === 'search' && <SearchModal />}
-      {modal === 'apps' && <ConnectAppsModal />}
-      {viewerOpen && <ComputerViewer />}
       <ConfigLayer />
     </div>
   );
@@ -74,5 +58,5 @@ export function App() {
   const user = useStore((s) => s.user);
   useEffect(() => { useStore.getState().checkAuth(); }, []);
   if (!authChecked) return <div className="boot" />;
-  return user ? <Shell /> : <SignIn />;
+  return user ? <Shell /> : <div className="boot">Can't reach the Grokbot server.</div>;
 }

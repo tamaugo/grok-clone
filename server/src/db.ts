@@ -16,31 +16,6 @@ CREATE TABLE IF NOT EXISTS users (
   avatar_url TEXT,
   created_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS auth_sessions (
-  token TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS login_attempts (
-  id TEXT PRIMARY KEY,
-  provisional_user_id TEXT NOT NULL,
-  connected_account_id TEXT,
-  created_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS computers (
-  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-  orgo_id TEXT,
-  status TEXT NOT NULL DEFAULT 'absent',
-  error TEXT,
-  updated_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS screens (
-  bot_id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  screen_id TEXT NOT NULL,
-  last_used_at INTEGER NOT NULL
-);
 CREATE TABLE IF NOT EXISTS bots (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -72,33 +47,6 @@ CREATE TABLE IF NOT EXISTS rows (
   PRIMARY KEY (bot_id, generation, seq)
 );
 CREATE INDEX IF NOT EXISTS rows_rev ON rows(bot_id, updated_seq);
-CREATE TABLE IF NOT EXISTS llm_items (
-  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
-  generation INTEGER NOT NULL,
-  idx INTEGER NOT NULL,
-  item TEXT NOT NULL,
-  PRIMARY KEY (bot_id, generation, idx)
-);
-CREATE TABLE IF NOT EXISTS pending_turns (
-  bot_id TEXT PRIMARY KEY REFERENCES bots(id) ON DELETE CASCADE,
-  state TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS approvals (
-  id TEXT PRIMARY KEY,
-  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
-  row_seq INTEGER NOT NULL,
-  call_id TEXT NOT NULL,
-  tool TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
-  created_at INTEGER NOT NULL,
-  resolved_at INTEGER
-);
-CREATE TABLE IF NOT EXISTS policies (
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  tool TEXT NOT NULL,
-  mode TEXT NOT NULL,
-  PRIMARY KEY (user_id, tool)
-);
 CREATE TABLE IF NOT EXISTS routines (
   id TEXT PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -132,10 +80,6 @@ CREATE TABLE IF NOT EXISTS skills (
   body TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS composio_sessions (
-  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-  session_id TEXT NOT NULL
-);
 `);
 
 // Idempotent column migrations for tables that predate a column.
@@ -143,8 +87,7 @@ function addColumn(table: string, col: string, ddl: string) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
   if (!cols.some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
 }
-addColumn('bots', 'voice', "TEXT NOT NULL DEFAULT 'luna'");
-addColumn('bots', 'voice_speed', 'REAL NOT NULL DEFAULT 1');
-addColumn('bots', 'voice_language', "TEXT NOT NULL DEFAULT 'auto'");
+/** Claude Code session the Bot resumes; cleared when the conversation is reset. */
+addColumn('bots', 'claude_session', 'TEXT');
 
 export const now = () => Date.now();

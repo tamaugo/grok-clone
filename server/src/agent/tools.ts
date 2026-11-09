@@ -1,12 +1,8 @@
 import { db, now } from '../db.js';
 import { newId } from '../lib/ids.js';
 import { hub } from '../lib/hub.js';
-import { orgo } from '../orgo.js';
-import { screenFor } from '../computer.js';
 import { appendRow, getBotRow, listRoutines, toRoutine, describeCron } from '../store.js';
-import { executeComposio, innerToolSlugs, isReadOnlySlug, toolkitInfo } from '../composio.js';
 import { scheduleRoutine, unscheduleRoutine } from '../routines.js';
-import { createEventRoutine, deleteEventTrigger, describeEvent, listTriggerTypes } from '../triggers.js';
 import { setCheckins } from '../proactive.js';
 import { createSubagent, deleteSubagent, listSubagents } from './subagents.js';
 import { createRoom, postToRoom } from './rooms.js';
@@ -18,13 +14,14 @@ export interface ToolCtx {
   botId: string;
   enqueueBotMessage: (fromBotId: string, toBotId: string, text: string, depth: number) => void;
   depth: number;
+  /** Per-turn state shared with the loop. */
+  turn: { suppressReply: boolean };
 }
 
 export interface ToolResult {
-  /** Responses API function_call_output.output: string or content array (text + images). */
-  output: string | any[];
+  output: string;
   summary?: string;
-  /** End the turn after this tool (e.g. a question was asked). */
+  /** The Bot should end its turn after this tool; any later reply text is not shown. */
   endTurn?: boolean;
 }
 
@@ -41,151 +38,11 @@ interface ToolDef {
 
 const obj = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
 
-async function shot(ctx: ToolCtx, caption: string): Promise<ToolResult> {
-  const { computerId, screenId } = await screenFor(ctx.userId, ctx.botId);
-  await new Promise((r) => setTimeout(r, 700));
-  const s = await orgo.screenshot(computerId, screenId);
-  const mime = s.mime_type ?? 'image/png';
-  const url = s.image.startsWith('data:') ? s.image : `data:${mime};base64,${s.image}`;
-  return {
-    output: [
-      { type: 'input_text', text: `${caption} Screen is ${s.width}x${s.height}px.` },
-      { type: 'input_image', image_url: url, detail: 'high' },
-    ],
-    summary: caption,
-  };
-}
-
-async function onScreen<T>(ctx: ToolCtx, fn: (computerId: string, screenId: string) => Promise<T>) {
-  const { computerId, screenId } = await screenFor(ctx.userId, ctx.botId);
-  return fn(computerId, screenId);
-}
-
 function botByName(userId: string, name: string) {
   return db.prepare('SELECT * FROM bots WHERE user_id=? AND lower(name)=lower(?)').get(userId, name.trim()) as any;
 }
 
 export const TOOLS: ToolDef[] = [
-  {
-    name: 'computer_screenshot',
-    description: "Take a screenshot of your own computer screen (a Linux desktop that only you use). Use this before acting on the screen.",
-    parameters: obj({}),
-    activity: 'on_its_computer',
-    label: 'Looking at the screen',
-    impl: async (_a, ctx) => shot(ctx, 'Current screen.'),
-  },
-  {
-    name: 'computer_click',
-    description: 'Click at pixel coordinates on your screen. Returns a fresh screenshot.',
-    parameters: obj({ x: { type: 'integer' }, y: { type: 'integer' }, button: { type: 'string', enum: ['left', 'right', 'middle'] }, double: { type: 'boolean' } }, ['x', 'y']),
-    activity: 'on_its_computer',
-    label: 'Clicking on screen',
-    impl: async (a, ctx) => {
-      await onScreen(ctx, (c, s) => orgo.click(c, s, { x: a.x, y: a.y, button: a.button ?? 'left', double: !!a.double }));
-      return shot(ctx, `Clicked (${a.x}, ${a.y}).`);
-    },
-  },
-  {
-    name: 'computer_type',
-    description: 'Type text into the focused element on your screen. Returns a fresh screenshot.',
-    parameters: obj({ text: { type: 'string' } }, ['text']),
-    activity: 'on_its_computer',
-    label: 'Typing',
-    impl: async (a, ctx) => {
-      const text = String(a.text);
-      for (let i = 0; i < text.length; i += 1500) await onScreen(ctx, (c, s) => orgo.type(c, s, text.slice(i, i + 1500)));
-      return shot(ctx, `Typed ${text.length} characters.`);
-    },
-  },
-  {
-    name: 'computer_key',
-    description: 'Press a key or key combination using X11 keysym names joined by "+", e.g. "Return", "ctrl+l", "ctrl+shift+t", "BackSpace", "Escape", "Page_Down".',
-    parameters: obj({ keys: { type: 'string' } }, ['keys']),
-    activity: 'on_its_computer',
-    label: 'Pressing keys',
-    impl: async (a, ctx) => {
-      const keys = String(a.keys).split('+').map((k) => (k.length === 1 ? k.toLowerCase() : k)).join('+');
-      await onScreen(ctx, (c, s) => orgo.key(c, s, keys));
-      return shot(ctx, `Pressed ${keys}.`);
-    },
-  },
-  {
-    name: 'computer_scroll',
-    description: 'Scroll the mouse wheel at a position on your screen.',
-    parameters: obj({ x: { type: 'integer' }, y: { type: 'integer' }, direction: { type: 'string', enum: ['up', 'down'] }, amount: { type: 'integer' } }, ['x', 'y', 'direction']),
-    activity: 'on_its_computer',
-    label: 'Scrolling',
-    impl: async (a, ctx) => {
-      await onScreen(ctx, (c, s) => orgo.scroll(c, s, { x: a.x, y: a.y, direction: a.direction, amount: a.amount ?? 3 }));
-      return shot(ctx, `Scrolled ${a.direction}.`);
-    },
-  },
-  {
-    name: 'computer_drag',
-    description: 'Drag with the left mouse button from one point to another on your screen.',
-    parameters: obj({ start_x: { type: 'integer' }, start_y: { type: 'integer' }, end_x: { type: 'integer' }, end_y: { type: 'integer' } }, ['start_x', 'start_y', 'end_x', 'end_y']),
-    activity: 'on_its_computer',
-    label: 'Dragging',
-    impl: async (a, ctx) => {
-      await onScreen(ctx, (c, s) => orgo.drag(c, s, a));
-      return shot(ctx, 'Dragged.');
-    },
-  },
-  {
-    name: 'open_browser',
-    description: 'Open a URL in a Chrome window on your screen (your own logged-in browser profile persists between uses). Returns a screenshot.',
-    parameters: obj({ url: { type: 'string' } }, ['url']),
-    activity: 'browsing_web',
-    label: 'Browsing a site',
-    impl: async (a, ctx) => {
-      const url = String(a.url).replace(/'/g, '%27');
-      await onScreen(ctx, (c, s) => {
-        const display = s === 'default' ? ':99' : `:${s.replace('screen-', '')}`;
-        const profile = `/root/grokbot/profiles/${ctx.botId}`;
-        // Reuse the bot's running Chrome if present (opens a new tab), else start one detached.
-        return orgo.bash(
-          c,
-          s,
-          `export DISPLAY=${display}; mkdir -p ${profile}; pgrep -f "user-data-dir=${profile}" >/dev/null || rm -f ${profile}/Singleton*; ` +
-            `setsid nohup google-chrome --no-sandbox --no-first-run --no-default-browser-check --disable-dev-shm-usage --password-store=basic ` +
-            `--user-data-dir=${profile} --start-maximized '${url}' >/tmp/chrome-${ctx.botId}.log 2>&1 < /dev/null & sleep 4; echo ok`,
-          40,
-        );
-      });
-      return shot(ctx, `Opened ${a.url}.`);
-    },
-  },
-  {
-    name: 'save_file',
-    description: "Save a deliverable (report, notes, CSV, code, markdown) to your Library so the user can open and download it. Saved under /root/grokbot/files/<your id>/ on your computer.",
-    parameters: obj({ filename: { type: 'string', description: 'e.g. briefing-2026-11-09.md' }, content: { type: 'string' } }, ['filename', 'content']),
-    activity: 'drafting_file',
-    label: 'Saving notes',
-    impl: async (a, ctx) => {
-      const name = String(a.filename).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'file.txt';
-      const dir = `/root/grokbot/files/${ctx.botId}`;
-      const b64 = Buffer.from(String(a.content), 'utf8').toString('base64');
-      // Chunk the base64 so very large files don't exceed a single command's size.
-      await onScreen(ctx, async (c, s) => {
-        await orgo.bash(c, s, `mkdir -p ${dir} && : > ${dir}/${name}.b64`, 30);
-        for (let i = 0; i < b64.length; i += 60000) await orgo.bash(c, s, `printf '%s' '${b64.slice(i, i + 60000)}' >> ${dir}/${name}.b64`, 30);
-        return orgo.bash(c, s, `base64 -d ${dir}/${name}.b64 > ${dir}/${name} && rm ${dir}/${name}.b64 && wc -c ${dir}/${name}`, 30);
-      });
-      return { output: JSON.stringify({ ok: true, path: `${dir}/${name}` }), summary: `Saved ${name}` };
-    },
-  },
-  {
-    name: 'shell',
-    description: 'Run a bash command on your own Linux computer (as root). Use for files, scripts, CLIs and quick data work. Output is truncated to 20k characters.',
-    parameters: obj({ command: { type: 'string' }, timeout_seconds: { type: 'integer' } }, ['command']),
-    activity: 'running_commands',
-    label: 'Running commands',
-    impl: async (a, ctx) => {
-      const r = await onScreen(ctx, (c, s) => orgo.bash(c, s, String(a.command), Math.min(Math.max(a.timeout_seconds ?? 120, 1), 290)));
-      const out = (r.output ?? '').slice(-20000);
-      return { output: JSON.stringify({ exit_code: r.exit_code, output: out }), summary: `exit ${r.exit_code}` };
-    },
-  },
   {
     name: 'remember',
     description: 'Save a durable memory about the user, their preferences, or your job, so you remember it in future conversations.',
@@ -225,33 +82,6 @@ export const TOOLS: ToolDef[] = [
       appendRow(ctx.botId, 'event', { type: 'event', event: 'routine-created', text: `Routine created: ${a.name} · ${describeCron(a.schedule)}`, ref: id });
       hub.emit(ctx.userId, { type: 'routines', botId: ctx.botId });
       return { output: JSON.stringify({ ok: true, routine: r }), summary: `Created routine ${a.name}` };
-    },
-  },
-  {
-    name: 'list_event_triggers',
-    description: 'List the event triggers a connected app offers (e.g. new email, new Slack message, new GitHub PR), with each trigger\'s config fields. Use before create_event_routine.',
-    parameters: obj({ toolkit: { type: 'string', description: 'Composio toolkit slug, e.g. gmail, slack, github, googlecalendar' } }, ['toolkit']),
-    activity: 'connecting_service',
-    label: 'Using a connected app',
-    impl: async (a) => ({ output: JSON.stringify(await listTriggerTypes(String(a.toolkit).toLowerCase())) }),
-  },
-  {
-    name: 'create_event_routine',
-    description: 'Create a routine that runs whenever an event happens in a connected app (instead of on a schedule). `trigger_slug` comes from list_event_triggers; `config_json` is a JSON object string with that trigger\'s config fields (use "{}" if none). `prompt` is what you will do each time, given the event payload.',
-    parameters: obj({ name: { type: 'string' }, prompt: { type: 'string' }, trigger_slug: { type: 'string' }, config_json: { type: 'string' } }, ['name', 'prompt', 'trigger_slug']),
-    activity: 'working',
-    label: 'Setting up a routine',
-    impl: async (a, ctx) => {
-      let config: Record<string, unknown> = {};
-      try { config = a.config_json ? JSON.parse(a.config_json) : {}; } catch { return { output: 'config_json must be a JSON object string.' }; }
-      try {
-        const r = await createEventRoutine(ctx.userId, ctx.botId, { name: a.name, prompt: a.prompt, trigger_slug: a.trigger_slug, config });
-        appendRow(ctx.botId, 'event', { type: 'event', event: 'routine-created', text: `Routine created: ${a.name} · ${describeEvent(`event:${String(a.trigger_slug).toUpperCase()}`)}`, ref: r.id });
-        hub.emit(ctx.userId, { type: 'routines', botId: ctx.botId });
-        return { output: JSON.stringify({ ok: true, routine_id: r.id }), summary: `Created event routine ${a.name}` };
-      } catch (e: any) {
-        return { output: `Could not create the trigger: ${e?.message ?? e}. If the app isn't connected, call request_app_connection first.` };
-      }
     },
   },
   {
@@ -312,7 +142,6 @@ export const TOOLS: ToolDef[] = [
     label: 'Removing a routine',
     impl: async (a, ctx) => {
       unscheduleRoutine(a.routine_id);
-      await deleteEventTrigger(a.routine_id);
       db.prepare('DELETE FROM routines WHERE id=? AND bot_id=?').run(a.routine_id, ctx.botId);
       hub.emit(ctx.userId, { type: 'routines', botId: ctx.botId });
       return { output: 'Deleted.' };
@@ -361,7 +190,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'spawn_subagent',
-    description: 'Start a subagent: a helper copy of you with its own context and its own computer screen, to work on one goal in parallel (e.g. research one company each). It reports back to you as a message when done. Max 4 at a time.',
+    description: 'Start a subagent: a helper copy of you with its own context, working in your folder, to work on one goal in parallel (e.g. research one company each). It reports back to you as a message when done. Max 4 at a time.',
     parameters: obj({ goal: { type: 'string', description: 'Self-contained task with everything the subagent needs to know' }, label: { type: 'string', description: 'Short name, e.g. "Acme research"' } }, ['goal']),
     activity: 'messaging_named',
     label: 'Starting a helper',
@@ -450,66 +279,36 @@ export const TOOLS: ToolDef[] = [
       return { output: 'Question shown to the user. Stop here and wait for their answer.', endTurn: true };
     },
   },
-  {
-    name: 'request_app_connection',
-    description: 'Ask the user to connect an app (e.g. gmail, googlecalendar, slack, github, notion, linear) so you can use it. Use the Composio toolkit slug.',
-    parameters: obj({ toolkit: { type: 'string' }, reason: { type: 'string' } }, ['toolkit', 'reason']),
-    activity: 'connecting_service',
-    label: 'Using a connected app',
-    impl: async (a, ctx) => {
-      const info = await toolkitInfo(String(a.toolkit).toLowerCase());
-      if (!info) return { output: `Unknown toolkit "${a.toolkit}". Use COMPOSIO_SEARCH_TOOLS to find the right toolkit slug.` };
-      appendRow(ctx.botId, 'card', { type: 'card', card: 'connect', toolkit: info.slug, toolkitName: info.name, logo: info.logo, reason: a.reason, status: 'pending' });
-      return { output: `Asked the user to connect ${info.name}. Stop here; you'll be told when it's connected.`, endTurn: true };
-    },
-  },
 ];
 
 export const toolMap = new Map(TOOLS.map((t) => [t.name, t]));
 
-export function functionSchemas() {
-  return TOOLS.map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters }));
-}
+/** Prefix Claude Code gives tools from this server's MCP endpoint. */
+export const MCP_PREFIX = 'mcp__grokbot__';
 
-// ---------- approvals policy ----------
-
-export type Decision = 'allow' | 'ask' | 'block';
-
-export function policyFor(userId: string, toolName: string, args: any): { decision: Decision; key: string; toolkit?: string; title: string } {
-  if (toolMap.has(toolName)) return { decision: 'allow', key: toolName, title: toolName };
-  const slugs = innerToolSlugs(toolName, args);
-  if (!slugs.length) return { decision: 'allow', key: toolName, title: toolName };
-  let decision: Decision = 'allow';
-  let key = slugs[0];
-  for (const slug of slugs) {
-    const p = db.prepare('SELECT mode FROM policies WHERE user_id=? AND tool=?').get(userId, slug) as any;
-    const mode = p?.mode ?? (isReadOnlySlug(slug) ? 'always_allow' : 'needs_approval');
-    if (mode === 'blocked') return { decision: 'block', key: slug, title: humanizeSlug(slug) };
-    if (mode === 'needs_approval') { decision = 'ask'; key = slug; }
-  }
-  return { decision, key, toolkit: key.split('_')[0].toLowerCase(), title: humanizeSlug(key) };
-}
-
-export function humanizeSlug(slug: string) {
-  const parts = slug.split('_');
-  const app = parts.shift() ?? '';
-  return `${app.charAt(0) + app.slice(1).toLowerCase()}: ${parts.join(' ').toLowerCase()}`;
-}
-
-export async function runComposioTool(ctx: ToolCtx, name: string, args: any): Promise<ToolResult> {
-  const r = await executeComposio(ctx.userId, name, args);
-  const ok = r.resultType ? r.resultType === 'completed' : !r.error;
-  const payload = ok ? r.data : { error: r.error, logId: r.logId };
-  let out = JSON.stringify(payload ?? null);
-  if (out.length > 60000) out = out.slice(0, 60000) + '…(truncated)';
-  return { output: out, summary: ok ? 'done' : 'failed' };
-}
+/** How Claude Code's built-in tools show up in the transcript. */
+const CLAUDE_TOOLS: Record<string, { kind: ActivityKind; label: string }> = {
+  Bash: { kind: 'running_commands', label: 'Running commands' },
+  BashOutput: { kind: 'waiting_on_command', label: 'Checking a command' },
+  Read: { kind: 'working', label: 'Reading files' },
+  Glob: { kind: 'working', label: 'Looking through files' },
+  Grep: { kind: 'working', label: 'Searching files' },
+  Write: { kind: 'drafting_file', label: 'Writing a file' },
+  Edit: { kind: 'drafting_file', label: 'Editing a file' },
+  MultiEdit: { kind: 'drafting_file', label: 'Editing a file' },
+  NotebookEdit: { kind: 'drafting_file', label: 'Editing a notebook' },
+  WebSearch: { kind: 'searching_web', label: 'Searching the web' },
+  WebFetch: { kind: 'reading_web', label: 'Reading a page' },
+  Task: { kind: 'working', label: 'Starting a helper' },
+  Agent: { kind: 'working', label: 'Starting a helper' },
+  TodoWrite: { kind: 'working', label: 'Planning' },
+  ToolSearch: { kind: 'working', label: 'Finding a tool' },
+};
 
 export function activityFor(name: string): { kind: ActivityKind; label: string } {
   const t = toolMap.get(name);
   if (t) return { kind: t.activity, label: t.label };
-  if (name === 'COMPOSIO_SEARCH_TOOLS' || name === 'COMPOSIO_GET_TOOL_SCHEMAS') return { kind: 'connecting_service', label: 'Using a connected app' };
-  return { kind: 'connecting_service', label: 'Using a connected app' };
+  return CLAUDE_TOOLS[name] ?? { kind: 'working', label: name.startsWith('mcp__') ? 'Using a connected tool' : 'Working' };
 }
 
 export function getBotName(botId: string) {

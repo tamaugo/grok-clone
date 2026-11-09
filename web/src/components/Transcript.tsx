@@ -33,7 +33,7 @@ function buildItems(rows: Row[]): Item[] {
     }
     if (b.type === 'message') {
       if (!b.text && !b.streaming) continue;
-      const side = b.role === 'user' && (!b.from || b.from.kind === 'voice') ? 'right' : 'left';
+      const side = b.role === 'user' && !b.from ? 'right' : 'left';
       const sender = b.from ? `${b.from.kind}:${b.from.id}` : b.role;
       const lastRow = last?.kind === 'group' ? last.rows[last.rows.length - 1] : null;
       const lastBody = lastRow?.body as MessageBody | undefined;
@@ -79,10 +79,17 @@ function SenderLabel({ from }: { from: NonNullable<MessageBody['from']> }) {
   const bot = useStore((s) => (from.kind === 'bot' ? s.bots.find((b) => b.id === from.id) : undefined));
   return (
     <div className="sender-label">
-      {bot ? <BotAvatarFor bot={bot} size={16} /> : from.kind === 'routine' ? <Icon name="clock" size={12} opacity={0.56} /> : from.kind === 'voice' ? <Icon name="voice_a" size={12} opacity={0.56} /> : <BotAvatar shape="blob" color="gray" size={16} />}
-      <span>{from.kind === 'routine' ? `Routine · ${from.name}` : from.kind === 'voice' ? 'Asked on a voice call' : `From ${from.name}`}</span>
+      {bot ? <BotAvatarFor bot={bot} size={16} /> : from.kind === 'routine' ? <Icon name="clock" size={12} opacity={0.56} /> : <BotAvatar shape="blob" color="gray" size={16} />}
+      <span>{from.kind === 'routine' ? `Routine · ${from.name}` : `From ${from.name}`}</span>
     </div>
   );
+}
+
+/** A short hint of what a step did, e.g. the shell command or file. */
+function stepDetail(c: ToolCallBody): string | null {
+  const a = (c.args ?? {}) as Record<string, unknown>;
+  const v = a.command ?? a.file_path ?? a.pattern ?? a.query ?? a.url ?? a.bot_name ?? a.title ?? a.name;
+  return typeof v === 'string' ? v.slice(0, 120) : c.summary ?? null;
 }
 
 function Steps({ rows, hideRunning }: { rows: Row[]; hideRunning: boolean }) {
@@ -103,10 +110,7 @@ function Steps({ rows, hideRunning }: { rows: Row[]; hideRunning: boolean }) {
             <li key={c.callId} className={`step is-${c.status}`}>
               <span className="step__dot" />
               <span className="step__label">{c.label}</span>
-              {c.summary && <span className="step__summary">{c.summary}</span>}
-              {c.status === 'error' && <span className="step__summary">Failed</span>}
-              {c.status === 'denied' && <span className="step__summary">Not allowed</span>}
-              {c.screenshot && <img className="step__shot" src={c.screenshot} alt="" />}
+              {c.status === 'error' ? <span className="step__summary">{c.summary || 'Failed'}</span> : stepDetail(c) && <span className="step__summary">{stepDetail(c)}</span>}
             </li>
           ))}
         </ul>

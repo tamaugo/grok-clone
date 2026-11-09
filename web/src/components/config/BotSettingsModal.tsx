@@ -328,13 +328,12 @@ function MemoriesTab({ bot, data, onChange }: { bot: Bot; data: BotSettingsBundl
     setHidden((h) => new Set(h).add(m.id));
     try { await configApi.deleteMemory(m.id); onChange(); } catch { setHidden((h) => { const n = new Set(h); n.delete(m.id); return n; }); }
   };
-  const fill = data ? Math.min(100, Math.round((data.memory.historyChars / data.memory.compactAtChars) * 100)) : 0;
   return (
     <div className="cfg-page">
       <div className="cfg-page__head">
         <div>
           <div className="cfg-page__title">Memories</div>
-          <div className="cfg-page__sub">What {bot.name} remembers about you. It saves things when you share them, and picks up more on its own once a chat goes quiet.</div>
+          <div className="cfg-page__sub">What {bot.name} remembers about you. It saves things when you share them.</div>
         </div>
       </div>
       {(data?.memories.length ?? 0) > 6 && (
@@ -358,16 +357,6 @@ function MemoriesTab({ bot, data, onChange }: { bot: Bot; data: BotSettingsBundl
               </div>
             </div>
           ))}
-        </div>
-      )}
-      {data && (
-        <div className="cfg-meter" title="Older messages are summarized automatically when this fills up.">
-          <div className="cfg-meter__label"><span>Conversation memory</span><span>{fill}% full</span></div>
-          <div className="cfg-meter__track"><span style={{ width: `${Math.max(2, fill)}%` }} /></div>
-          <div className="cfg-field__hint">
-            When it fills up, older messages get summarized so {bot.name} can keep going.
-            {data.memory.lastCompaction ? ` Last summarized ${shortDate(data.memory.lastCompaction.created_at)}.` : ''}
-          </div>
         </div>
       )}
     </div>

@@ -6,7 +6,7 @@ import { useStore } from './store';
 
 export type Theme = 'system' | 'light' | 'dark';
 export type BotSettingsTab = 'general' | 'skills' | 'memories' | 'routines';
-export type AppSection = 'general' | 'computer' | 'permissions' | 'apps' | 'account';
+export type AppSection = 'general' | 'server';
 
 interface ConfigUI {
   botSettings: { botId: string; tab: BotSettingsTab } | null;

@@ -8,6 +8,10 @@ import { allLive, appendRow, clearConversation, emitBot, getBot, getBotRow, getR
 import { enqueue, interrupt } from './agent/loop.js';
 import { runRoutine, scheduleRoutine, unscheduleRoutine } from './routines.js';
 import { dispatchRoomMessage } from './agent/rooms.js';
+import { activeScreens, screenFor, screenOf, screenshot, stopScreen } from './computer.js';
+import { env } from './env.js';
+import { addApp, appBySlug, listApps, removeApp, testApp } from './apps.js';
+import { deletePolicy, expirePending, listPolicies, resolveApproval } from './agent/approvals.js';
 import type { AvatarColor, AvatarShape } from './types.js';
 
 export const api = new Hono<AuthVars>();
@@ -95,6 +99,7 @@ api.delete('/bots/:id', (c) => {
   const b = ownBot(c.get('user').id, c.req.param('id'));
   if (!b) return c.json({ error: 'not found' }, 404);
   for (const r of listRoutines(b.id)) unscheduleRoutine(r.id);
+  stopScreen(b.id, 'bot deleted');
   db.prepare('DELETE FROM bots WHERE id=?').run(b.id);
   hub.emit(c.get('user').id, { type: 'roster' });
   return c.json({ ok: true });
@@ -131,6 +136,8 @@ api.post('/bots/:id/messages', async (c) => {
   if (!b) return c.json({ error: 'not found' }, 404);
   const { text } = await c.req.json<{ text: string }>();
   if (!text?.trim()) return c.json({ error: 'empty' }, 400);
+  // A new message supersedes anything the Bot was waiting on (as in Grok Bot).
+  expirePending(b.id);
   const row = appendRow(b.id, 'message', { type: 'message', role: 'user', text: text.trim() });
   // Group chats dispatch to their member Bots instead of running their own loop.
   if (b.kind === 'room') dispatchRoomMessage(b.id, text.trim(), enqueue);
@@ -155,6 +162,12 @@ api.post('/bots/:id/fresh', (c) => {
   return c.json({ ok: true });
 });
 
+api.post('/approvals/:id', async (c) => {
+  const { decision } = await c.req.json<{ decision: 'allow' | 'always' | 'deny' }>();
+  try { resolveApproval(c.get('user').id, c.req.param('id'), decision); } catch { return c.json({ error: 'not found' }, 404); }
+  return c.json({ ok: true });
+});
+
 api.post('/bots/:id/cards/:seq/answer', async (c) => {
   const b = ownBot(c.get('user').id, c.req.param('id'));
   if (!b) return c.json({ error: 'not found' }, 404);
@@ -172,7 +185,8 @@ api.post('/bots/:id/cards/:seq/dismiss', (c) => {
   if (!b) return c.json({ error: 'not found' }, 404);
   const row = getRow(b.id, Number(c.req.param('seq')));
   if (!row || row.body.type !== 'card') return c.json({ error: 'not a card' }, 400);
-  updateRow(b.id, row.seq, { ...row.body, status: 'dismissed' } as any);
+  updateRow(b.id, row.seq, { ...row.body, status: row.body.card === 'connect' ? 'skipped' : 'dismissed' } as any);
+  if (row.body.card === 'connect') enqueue(b.id, { type: 'system', text: `The user skipped connecting ${row.body.toolkitName}. Continue without it.` });
   return c.json({ ok: true });
 });
 
@@ -229,5 +243,72 @@ api.get('/bots/:id/memories', (c) => {
 
 api.delete('/memories/:id', (c) => {
   db.prepare('DELETE FROM memories WHERE id=? AND bot_id IN (SELECT id FROM bots WHERE user_id=?)').run(c.req.param('id'), c.get('user').id);
+  return c.json({ ok: true });
+});
+
+// ---------- computer (each Bot's virtual screen on this VM) ----------
+
+api.get('/computer', (c) => c.json({ screens: activeScreens(), maxScreens: env.maxScreens, idleMinutes: env.screenIdleMin }));
+
+api.post('/bots/:id/computer/start', async (c) => {
+  const b = ownBot(c.get('user').id, c.req.param('id'));
+  if (!b) return c.json({ error: 'not found' }, 404);
+  try { await screenFor(b.id); } catch (e: any) { return c.json({ error: e?.message ?? String(e) }, 409); }
+  return c.json({ ok: true });
+});
+
+api.post('/bots/:id/computer/stop', (c) => {
+  const b = ownBot(c.get('user').id, c.req.param('id'));
+  if (!b) return c.json({ error: 'not found' }, 404);
+  return c.json({ ok: stopScreen(b.id) });
+});
+
+/** Current frame of the Bot's screen; 204 while it's asleep (never wakes it). */
+api.get('/bots/:id/screenshot', async (c) => {
+  const b = ownBot(c.get('user').id, c.req.param('id'));
+  if (!b) return c.json({ error: 'not found' }, 404);
+  if (!screenOf(b.id)) return c.body(null, 204);
+  try {
+    const img = await screenshot(b.id);
+    return c.body(new Uint8Array(img), 200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' });
+  } catch {
+    return c.body(null, 204);
+  }
+});
+
+// ---------- connected apps (MCP servers) and permissions ----------
+
+api.get('/apps', (c) => c.json({ apps: listApps() }));
+
+api.post('/apps', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const app = addApp(body);
+  if (typeof app === 'string') return c.json({ error: app }, 400);
+  const test = await testApp(app.slug);
+  hub.emit(c.get('user').id, { type: 'connections' });
+  // Bots that asked for this app get told it's ready.
+  const { botId, seq } = body as { botId?: string; seq?: number };
+  if (botId && seq && ownBot(c.get('user').id, botId)) {
+    const row = getRow(botId, Number(seq));
+    if (row?.body.type === 'card' && row.body.card === 'connect') updateRow(botId, row.seq, { ...row.body, status: 'connected' });
+    enqueue(botId, { type: 'system', text: `The user connected ${app.name}. Its tools are named mcp__app_${app.slug}__<tool>. Continue with what you were doing.` });
+  }
+  return c.json({ app, test });
+});
+
+api.post('/apps/:slug/test', async (c) => {
+  if (!appBySlug(c.req.param('slug'))) return c.json({ error: 'not found' }, 404);
+  return c.json(await testApp(c.req.param('slug')));
+});
+
+api.delete('/apps/:slug', (c) => {
+  removeApp(c.req.param('slug'));
+  hub.emit(c.get('user').id, { type: 'connections' });
+  return c.json({ ok: true });
+});
+
+api.get('/policies', (c) => c.json({ policies: listPolicies(c.get('user').id) }));
+api.delete('/policies/:tool', (c) => {
+  deletePolicy(c.get('user').id, c.req.param('tool'));
   return c.json({ ok: true });
 });

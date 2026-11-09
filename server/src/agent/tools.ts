@@ -4,6 +4,8 @@ import { hub } from '../lib/hub.js';
 import { appendRow, getBotRow, listRoutines, toRoutine, describeCron } from '../store.js';
 import { scheduleRoutine, unscheduleRoutine } from '../routines.js';
 import { setCheckins } from '../proactive.js';
+import { appBySlug, listApps, slugify } from '../apps.js';
+import { openBrowser, screenOf, screenshot, SCREEN_H, SCREEN_W, xdo } from '../computer.js';
 import { createSubagent, deleteSubagent, listSubagents } from './subagents.js';
 import { createRoom, postToRoom } from './rooms.js';
 import type { ActivityKind } from '../types.js';
@@ -20,6 +22,8 @@ export interface ToolCtx {
 
 export interface ToolResult {
   output: string;
+  /** A screenshot to show the model alongside the text. */
+  image?: { data: string; mimeType: string };
   summary?: string;
   /** The Bot should end its turn after this tool; any later reply text is not shown. */
   endTurn?: boolean;
@@ -38,11 +42,109 @@ interface ToolDef {
 
 const obj = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
 
+async function shot(ctx: ToolCtx, caption: string): Promise<ToolResult> {
+  await new Promise((r) => setTimeout(r, 700));
+  const img = await screenshot(ctx.botId);
+  const display = screenOf(ctx.botId)?.display;
+  return {
+    output: `${caption} Screen is ${SCREEN_W}x${SCREEN_H}px${display ? ` (DISPLAY=:${display})` : ''}.`,
+    image: { data: img.toString('base64'), mimeType: 'image/jpeg' },
+    summary: caption,
+  };
+}
+
+const int = (v: unknown, name: string) => {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n)) throw new Error(`${name} must be a number`);
+  return String(n);
+};
+
 function botByName(userId: string, name: string) {
   return db.prepare('SELECT * FROM bots WHERE user_id=? AND lower(name)=lower(?)').get(userId, name.trim()) as any;
 }
 
 export const TOOLS: ToolDef[] = [
+  {
+    name: 'computer_screenshot',
+    description: "Take a screenshot of your own computer screen (a Linux desktop on this VM that only you use; it starts if it's asleep). Use this before acting on the screen. The reply includes your DISPLAY number for launching GUI apps from Bash.",
+    parameters: obj({}),
+    activity: 'on_its_computer',
+    label: 'Looking at the screen',
+    impl: async (_a, ctx) => shot(ctx, 'Current screen.'),
+  },
+  {
+    name: 'computer_click',
+    description: 'Click at pixel coordinates on your screen. Returns a fresh screenshot.',
+    parameters: obj({ x: { type: 'integer' }, y: { type: 'integer' }, button: { type: 'string', enum: ['left', 'right', 'middle'] }, double: { type: 'boolean' } }, ['x', 'y']),
+    activity: 'on_its_computer',
+    label: 'Clicking on screen',
+    impl: async (a, ctx) => {
+      const button = { left: '1', middle: '2', right: '3' }[a.button as string] ?? '1';
+      await xdo(ctx.botId, ['mousemove', int(a.x, 'x'), int(a.y, 'y'), 'click', ...(a.double ? ['--repeat', '2'] : []), button]);
+      return shot(ctx, `Clicked (${a.x}, ${a.y}).`);
+    },
+  },
+  {
+    name: 'computer_type',
+    description: 'Type text into the focused element on your screen. Returns a fresh screenshot.',
+    parameters: obj({ text: { type: 'string' } }, ['text']),
+    activity: 'on_its_computer',
+    label: 'Typing',
+    impl: async (a, ctx) => {
+      const text = String(a.text);
+      for (let i = 0; i < text.length; i += 500) await xdo(ctx.botId, ['type', '--delay', '8', '--', text.slice(i, i + 500)]);
+      return shot(ctx, `Typed ${text.length} characters.`);
+    },
+  },
+  {
+    name: 'computer_key',
+    description: 'Press a key or key combination using X11 keysym names joined by "+", e.g. "Return", "ctrl+l", "ctrl+shift+t", "BackSpace", "Escape", "Page_Down".',
+    parameters: obj({ keys: { type: 'string' } }, ['keys']),
+    activity: 'on_its_computer',
+    label: 'Pressing keys',
+    impl: async (a, ctx) => {
+      const keys = String(a.keys).split('+').map((k) => (k.length === 1 ? k.toLowerCase() : k)).join('+');
+      await xdo(ctx.botId, ['key', '--', keys]);
+      return shot(ctx, `Pressed ${keys}.`);
+    },
+  },
+  {
+    name: 'computer_scroll',
+    description: 'Scroll the mouse wheel at a position on your screen.',
+    parameters: obj({ x: { type: 'integer' }, y: { type: 'integer' }, direction: { type: 'string', enum: ['up', 'down'] }, amount: { type: 'integer' } }, ['x', 'y', 'direction']),
+    activity: 'on_its_computer',
+    label: 'Scrolling',
+    impl: async (a, ctx) => {
+      const n = Math.min(Math.max(Number(a.amount ?? 3) || 3, 1), 30);
+      await xdo(ctx.botId, ['mousemove', int(a.x, 'x'), int(a.y, 'y'), 'click', '--repeat', String(n), '--delay', '40', a.direction === 'up' ? '4' : '5']);
+      return shot(ctx, `Scrolled ${a.direction}.`);
+    },
+  },
+  {
+    name: 'computer_drag',
+    description: 'Drag with the left mouse button from one point to another on your screen.',
+    parameters: obj({ start_x: { type: 'integer' }, start_y: { type: 'integer' }, end_x: { type: 'integer' }, end_y: { type: 'integer' } }, ['start_x', 'start_y', 'end_x', 'end_y']),
+    activity: 'on_its_computer',
+    label: 'Dragging',
+    impl: async (a, ctx) => {
+      await xdo(ctx.botId, ['mousemove', int(a.start_x, 'start_x'), int(a.start_y, 'start_y'), 'mousedown', '1', 'sleep', '0.15', 'mousemove', int(a.end_x, 'end_x'), int(a.end_y, 'end_y'), 'sleep', '0.15', 'mouseup', '1']);
+      return shot(ctx, 'Dragged.');
+    },
+  },
+  {
+    name: 'open_browser',
+    description: 'Open a URL in a Chromium window on your screen (your own browser profile, so logins persist between uses). Returns a screenshot.',
+    parameters: obj({ url: { type: 'string' } }, ['url']),
+    activity: 'browsing_web',
+    label: 'Browsing a site',
+    impl: async (a, ctx) => {
+      const url = String(a.url);
+      if (!/^(https?|file):\/\//i.test(url) && !/^about:/i.test(url)) return { output: 'Use a full URL starting with http:// or https://.' };
+      await openBrowser(ctx.botId, url);
+      await new Promise((r) => setTimeout(r, 2500));
+      return shot(ctx, `Opened ${url}.`);
+    },
+  },
   {
     name: 'remember',
     description: 'Save a durable memory about the user, their preferences, or your job, so you remember it in future conversations.',
@@ -279,6 +381,20 @@ export const TOOLS: ToolDef[] = [
       return { output: 'Question shown to the user. Stop here and wait for their answer.', endTurn: true };
     },
   },
+  {
+    name: 'request_app_connection',
+    description: "Ask the user to connect an app (e.g. GitHub, Notion, Linear, Gmail) so you can use it. Connected apps appear as extra tools named mcp__app_<app>__<tool>. Ends your turn; you'll be told when it's connected.",
+    parameters: obj({ app: { type: 'string', description: 'App name, e.g. "GitHub"' }, reason: { type: 'string' } }, ['app', 'reason']),
+    activity: 'connecting_service',
+    label: 'Using a connected app',
+    impl: async (a, ctx) => {
+      const slug = slugify(String(a.app));
+      const existing = appBySlug(slug) ?? listApps().find((x) => x.name.toLowerCase() === String(a.app).toLowerCase());
+      if (existing) return { output: `${existing.name} is already connected. Its tools are named mcp__app_${existing.slug}__<tool>. If you don't see them, they'll be available from your next turn.` };
+      appendRow(ctx.botId, 'card', { type: 'card', card: 'connect', toolkit: slug, toolkitName: String(a.app), reason: String(a.reason), status: 'pending' });
+      return { output: `Asked the user to connect ${a.app}. Stop here; you'll be told when it's connected.`, endTurn: true };
+    },
+  },
 ];
 
 export const toolMap = new Map(TOOLS.map((t) => [t.name, t]));
@@ -308,7 +424,8 @@ const CLAUDE_TOOLS: Record<string, { kind: ActivityKind; label: string }> = {
 export function activityFor(name: string): { kind: ActivityKind; label: string } {
   const t = toolMap.get(name);
   if (t) return { kind: t.activity, label: t.label };
-  return CLAUDE_TOOLS[name] ?? { kind: 'working', label: name.startsWith('mcp__') ? 'Using a connected tool' : 'Working' };
+  if (CLAUDE_TOOLS[name]) return CLAUDE_TOOLS[name];
+  return name.startsWith('mcp__') ? { kind: 'connecting_service', label: 'Using a connected app' } : { kind: 'working', label: 'Working' };
 }
 
 export function getBotName(botId: string) {

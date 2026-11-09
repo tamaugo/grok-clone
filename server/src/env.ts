@@ -21,6 +21,10 @@ export const env = {
   maxConcurrent: num(process.env.GROKBOT_MAX_CONCURRENT, 2),
   /** Don't start another Bot unless at least this much memory is available. */
   minFreeMb: num(process.env.GROKBOT_MIN_FREE_MB, 600),
+  /** Max Bot computers (virtual screens + browser) running at once. */
+  maxScreens: num(process.env.GROKBOT_MAX_SCREENS, 2),
+  /** Put a Bot's computer to sleep after this many idle minutes with nobody watching. */
+  screenIdleMin: num(process.env.GROKBOT_SCREEN_IDLE_MIN, 15),
   /** Kill a single turn that runs longer than this. */
   turnTimeoutMin: num(process.env.GROKBOT_TURN_TIMEOUT_MIN, 45),
 };

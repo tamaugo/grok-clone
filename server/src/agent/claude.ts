@@ -4,6 +4,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { db } from '../db.js';
 import { env } from '../env.js';
+import { appMcpServers } from '../apps.js';
 
 /**
  * Runs one Bot turn through the Claude Code CLI in headless mode
@@ -77,6 +78,11 @@ export interface RunResult { sessionId: string | null; isError: boolean; resultT
 
 const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
+const ALLOWED_TOOLS = [
+  'Bash', 'BashOutput', 'KillShell', 'Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Glob', 'Grep', 'LS',
+  'WebSearch', 'WebFetch', 'Task', 'Agent', 'TodoWrite', 'ToolSearch', 'mcp__grokbot',
+];
+
 export async function runClaude(o: RunOptions): Promise<RunResult> {
   await acquire(o.signal, o.onQueued);
   try {
@@ -93,14 +99,18 @@ function spawnClaude(o: RunOptions): Promise<RunResult> {
   const sysFile = path.join(metaDir, `system-${o.botId}.md`);
   fs.writeFileSync(sysFile, o.systemPrompt);
   const mcpFile = path.join(metaDir, `mcp-${o.botId}.json`);
-  fs.writeFileSync(mcpFile, JSON.stringify({ mcpServers: { grokbot: { type: 'http', url: o.mcpUrl, headers: { Authorization: `Bearer ${o.mcpToken}` } } } }), { mode: 0o600 });
+  const servers = { ...appMcpServers(), grokbot: { type: 'http', url: o.mcpUrl, headers: { Authorization: `Bearer ${o.mcpToken}` } } };
+  fs.writeFileSync(mcpFile, JSON.stringify({ mcpServers: servers }), { mode: 0o600 });
 
   const args = [
     '-p',
     '--output-format', 'stream-json',
     '--verbose',
     '--include-partial-messages',
-    '--dangerously-skip-permissions',
+    // The Bot's own tools, shell, files and web run freely. Anything else (connected apps)
+    // goes through our permission tool, which asks the user when an action changes data.
+    '--allowedTools', ALLOWED_TOOLS.join(','),
+    '--permission-prompt-tool', 'mcp__grokbot__permission_prompt',
     '--append-system-prompt-file', sysFile,
     '--mcp-config', mcpFile,
   ];
@@ -111,7 +121,8 @@ function spawnClaude(o: RunOptions): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(env.claudeBin, args, {
       cwd,
-      env: { ...process.env, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' },
+      // MCP_TOOL_TIMEOUT: an approval can wait on the user for up to 30 minutes.
+      env: { ...process.env, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', MCP_TOOL_TIMEOUT: String(35 * 60_000) },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     child.stdin.end(o.prompt);

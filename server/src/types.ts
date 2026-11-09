@@ -72,14 +72,52 @@ export interface ToolCallBody {
   summary?: string;
 }
 
-export type CardBody = {
-  type: 'card';
-  card: 'question';
-  question: string;
-  options: string[];
-  status: 'pending' | 'answered' | 'dismissed';
-  answer?: string;
-};
+export type CardBody =
+  | {
+      type: 'card';
+      card: 'approval';
+      approvalId: string;
+      title: string;
+      detail: string;
+      tool: string;
+      toolkit?: string;
+      toolkitName?: string;
+      logo?: string;
+      args: unknown;
+      status: 'pending' | 'allowed' | 'always' | 'denied' | 'expired';
+    }
+  | {
+      type: 'card';
+      card: 'question';
+      question: string;
+      options: string[];
+      status: 'pending' | 'answered' | 'dismissed';
+      answer?: string;
+    }
+  | {
+      type: 'card';
+      card: 'connect';
+      toolkit: string;
+      toolkitName: string;
+      logo?: string;
+      reason: string;
+      status: 'pending' | 'connected' | 'skipped';
+    };
+
+/** A connected app (an MCP server). Secret header/env values never leave the server. */
+export interface ConnectedApp {
+  slug: string;
+  name: string;
+  description: string;
+  logo: string | null;
+  transport: 'http' | 'sse' | 'stdio';
+  url: string | null;
+  command: string | null;
+  args: string[];
+  headerNames: string[];
+  envNames: string[];
+  createdAt: number;
+}
 
 export interface EventBody {
   type: 'event';
@@ -101,6 +139,8 @@ export interface LiveState {
   activity: { kind: ActivityKind; detail?: string; since: number } | null;
   awaiting: { reason: string; since: number } | null;
   startedAt: number | null;
+  /** The Bot's computer (virtual screen) is awake. */
+  screen?: boolean;
 }
 
 export interface Routine {
@@ -127,4 +167,5 @@ export type ServerEvent =
   | { type: 'routines'; botId: string }
   | { type: 'tasks'; botId: string }
   | { type: 'memories'; botId: string }
+  | { type: 'connections' }
   | { type: 'ping' };

@@ -67,6 +67,34 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS approvals (
+  id TEXT PRIMARY KEY,
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  row_seq INTEGER NOT NULL,
+  tool TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at INTEGER NOT NULL,
+  resolved_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS policies (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  tool TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  PRIMARY KEY (user_id, tool)
+);
+CREATE TABLE IF NOT EXISTS apps (
+  slug TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  logo TEXT,
+  transport TEXT NOT NULL DEFAULT 'http',
+  url TEXT,
+  command TEXT,
+  args TEXT NOT NULL DEFAULT '[]',
+  env TEXT NOT NULL DEFAULT '{}',
+  headers TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,

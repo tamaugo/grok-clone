@@ -15,13 +15,18 @@ import { enqueue } from './agent/loop.js';
 import { mcpApi } from './agent/mcp.js';
 import { memAvailableMb, runningCount } from './agent/claude.js';
 import { configApi } from './routes-config.js';
+import { attachVncRelay } from './vnc.js';
+import { expireStaleApprovals } from './agent/approvals.js';
+import { activeScreens, startIdleScreens } from './computer.js';
+import type { Server } from 'node:http';
 
 initSubagents();
 initRooms();
 setupLocalUser();
+expireStaleApprovals();
 
 const app = new Hono();
-app.get('/api/health', (c) => c.json({ ok: true, running: runningCount(), maxConcurrent: env.maxConcurrent, memAvailableMb: memAvailableMb() }));
+app.get('/api/health', (c) => c.json({ ok: true, running: runningCount(), maxConcurrent: env.maxConcurrent, screens: activeScreens().length, maxScreens: env.maxScreens, memAvailableMb: memAvailableMb() }));
 app.route('/mcp', mcpApi);
 app.route('/api/checkins', checkinsApi);
 app.route('/api/rooms', roomsApi);
@@ -35,9 +40,11 @@ if (fs.existsSync(webDist)) {
   app.get('*', (c) => c.html(fs.readFileSync(path.join(webDist, 'index.html'), 'utf8')));
 }
 
-serve({ fetch: app.fetch, port: env.port, hostname: env.host }, (info) =>
+const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, (info) =>
   console.log(`[grokbot] server on http://${env.host}:${info.port} (Claude Code, max ${env.maxConcurrent} Bots at once, min ${env.minFreeMb} MB free)`),
 );
+attachVncRelay(server as unknown as Server);
+startIdleScreens();
 // GROKBOT_NO_SCHEDULER=1 for extra dev/test servers sharing a database copy, so routines don't fire twice.
 if (process.env.GROKBOT_NO_SCHEDULER !== '1') {
   initRoutines(enqueue);

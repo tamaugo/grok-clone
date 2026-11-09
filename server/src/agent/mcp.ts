@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { token } from '../lib/ids.js';
 import { TOOLS, toolMap, type ToolCtx } from './tools.js';
+import { requestPermission } from './approvals.js';
 
 /**
  * A minimal MCP server (Streamable HTTP, JSON responses) that gives each running
@@ -9,6 +10,13 @@ import { TOOLS, toolMap, type ToolCtx } from './tools.js';
  */
 
 const turns = new Map<string, ToolCtx>();
+
+/** Called by Claude Code itself (--permission-prompt-tool) before tools that need a decision. */
+const PERMISSION_TOOL = {
+  name: 'permission_prompt',
+  description: 'Internal: permission check called by the system. Never call this yourself.',
+  inputSchema: { type: 'object', properties: { tool_name: { type: 'string' }, input: { type: 'object' }, tool_use_id: { type: 'string' } }, required: ['tool_name'] },
+};
 
 export function openTurn(ctx: ToolCtx): { token: string; close: () => void } {
   const t = token();
@@ -31,14 +39,23 @@ async function handle(ctx: ToolCtx, m: any): Promise<object | null> {
     case 'ping':
       return ok(m.id, {});
     case 'tools/list':
-      return ok(m.id, { tools: TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.parameters })) });
+      return ok(m.id, { tools: [...TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.parameters })), PERMISSION_TOOL] });
     case 'tools/call': {
+      if (m.params?.name === PERMISSION_TOOL.name) {
+        // Claude Code's --permission-prompt-tool contract: reply with allow (+ input) or deny (+ message).
+        const a = m.params?.arguments ?? {};
+        const r = await requestPermission(ctx.botId, String(a.tool_name ?? ''), a.input);
+        const text = JSON.stringify(r.allow ? { behavior: 'allow', updatedInput: a.input ?? {} } : { behavior: 'deny', message: r.message });
+        return ok(m.id, { content: [{ type: 'text', text }] });
+      }
       const tool = toolMap.get(m.params?.name);
       if (!tool) return fail(m.id, -32602, `Unknown tool ${m.params?.name}`);
       try {
         const res = await tool.impl(m.params?.arguments ?? {}, ctx);
         if (res.endTurn) ctx.turn.suppressReply = true;
-        return ok(m.id, { content: [{ type: 'text', text: res.output }] });
+        const content: object[] = [{ type: 'text', text: res.output }];
+        if (res.image) content.push({ type: 'image', data: res.image.data, mimeType: res.image.mimeType });
+        return ok(m.id, { content });
       } catch (e: any) {
         return ok(m.id, { content: [{ type: 'text', text: `Tool error: ${e?.message ?? e}` }], isError: true });
       }

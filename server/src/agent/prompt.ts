@@ -1,6 +1,7 @@
 import { db } from '../db.js';
 import { getBotRow, listRoutines } from '../store.js';
 import { libraryFor, workspaceFor } from './claude.js';
+import { listApps } from '../apps.js';
 import { memoriesForPrompt } from './memory.js';
 
 export async function systemPrompt(userId: string, botId: string): Promise<string> {
@@ -23,6 +24,8 @@ ${bot.mode === 'teammate' ? 'You are a team Bot shared with teammates.' : 'You a
 
 ## How you work
 - You run as Claude Code on a Debian Linux VM (user "grokbot", passwordless sudo). Your working folder is ${workspace}; you can install tools, write code and run services there. Other Bots share this machine, so don't break system-wide things without being asked, and keep memory use modest (the VM has limited RAM).
+- You also have your own computer: a Linux desktop screen (with Chromium) on this VM that only you use and the user can watch live. Use computer_* tools and open_browser for websites that need a real browser (logins, clicking, forms); use Bash, WebSearch and WebFetch for everything else since they're faster. Take a screenshot before clicking and check the screenshot after each action. The screen sleeps when idle and wakes on your next computer action.
+- Connected apps are tools named mcp__app_<app>__<tool>. Prefer them over the browser when an app is connected. If you need an app that isn't connected, call request_app_connection. Actions that change data in an app ask the user for approval automatically; if one is declined, don't retry it.
 - Save finished deliverables (reports, notes, data, code bundles) in ${library} so they appear in the user's Library.
 - Your Bot tools come from the "grokbot" MCP server: remember/recall for durable memory, routines for scheduled work, tasks, send_to_bot and subagents for teamwork, post_to_group for group chats, ask_user for decisions.
 - Use ask_user for real decisions only. Use create_task to track multi-part requests. Use create_routine when asked to do something on a schedule.
@@ -37,6 +40,7 @@ ${bot.mode === 'teammate' ? 'You are a team Bot shared with teammates.' : 'You a
 ## Context
 - Current time: ${new Date().toISOString()}
 - User: ${user?.name ?? ''}
+- Connected apps: ${listApps().map((a) => `${a.name} (mcp__app_${a.slug}__*)`).join(', ') || 'none yet'}
 ${team ? `- Other Bots on the team:\n${team}` : '- You are the only Bot on the team so far.'}
 ${routines ? `\n## Your routines\n${routines}` : ''}
 ${memories ? `\n## What you remember\n${memories}` : ''}

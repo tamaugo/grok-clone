@@ -1,6 +1,7 @@
 import { db, now } from '../db.js';
 import { env } from '../env.js';
-import { appendRow, emitBot, getBotRow, getRow, setLive, updateRow } from '../store.js';
+import { appendRow, emitBot, getBotRow, getRow, setLive, toolRows, updateRow } from '../store.js';
+import { lastShotThumbnail } from '../computer.js';
 import type { MessageBody, ToolCallBody } from '../types.js';
 import { systemPrompt } from './prompt.js';
 import { runClaude } from './claude.js';
@@ -97,6 +98,9 @@ async function runTurn(botId: string, trigger: Trigger) {
 
 // ---------- Claude stream-json events -> transcript rows ----------
 
+/** Computer tools whose steps get a screenshot thumbnail. */
+const SHOT_TOOLS = new Set(['computer_screenshot', 'computer_click', 'computer_type', 'computer_key', 'computer_scroll', 'computer_drag', 'open_browser']);
+
 class TranscriptWriter {
   private msgSeq: number | null = null;
   private text = '';
@@ -162,6 +166,7 @@ class TranscriptWriter {
         const act = activityFor(name);
         const row = appendRow(this.botId, 'tool-call', { type: 'tool-call', callId: block.id, name, label: act.label, status: 'running', args: block.input } satisfies ToolCallBody);
         this.tools.set(block.id, row.seq);
+        toolRows.set(block.id, { botId: this.botId, seq: row.seq });
         const detail = name === 'send_to_bot' ? String(block.input?.bot_name ?? '') : undefined;
         setLive(this.botId, { activity: { kind: name === 'send_to_bot' ? 'messaging_named' : act.kind, detail, since: now() } });
       }
@@ -177,8 +182,17 @@ class TranscriptWriter {
       const row = getRow(this.botId, seq);
       if (!row || row.body.type !== 'tool-call') continue;
       const text = typeof block.content === 'string' ? block.content : (block.content ?? []).map((c: any) => c?.text ?? '').join(' ');
-      updateRow(this.botId, seq, { ...row.body, status: block.is_error ? 'error' : 'done', summary: block.is_error ? text.slice(0, 200) : undefined });
       this.tools.delete(block.tool_use_id);
+      toolRows.delete(block.tool_use_id);
+      if (row.body.status === 'denied') continue; // the user declined it; keep "Not allowed"
+      updateRow(this.botId, seq, { ...row.body, status: block.is_error ? 'error' : 'done', summary: block.is_error ? text.slice(0, 200) : undefined });
+      if (!block.is_error && SHOT_TOOLS.has(row.body.name)) {
+        const botId = this.botId;
+        lastShotThumbnail(botId).then((shot) => {
+          const cur = shot ? getRow(botId, seq) : null;
+          if (shot && cur?.body.type === 'tool-call') updateRow(botId, seq, { ...cur.body, screenshot: shot });
+        }).catch(() => {});
+      }
       setLive(this.botId, { activity: { kind: 'thinking', since: now() } });
     }
   }
@@ -186,6 +200,7 @@ class TranscriptWriter {
   /** Close any streaming text and mark unfinished tool calls. */
   finish(reason?: string) {
     if (this.inText) { this.inText = false; this.finalizeText(); }
+    for (const id of this.tools.keys()) toolRows.delete(id);
     for (const seq of this.tools.values()) {
       const row = getRow(this.botId, seq);
       if (row?.body.type === 'tool-call') updateRow(this.botId, seq, { ...row.body, status: 'error', summary: reason ?? 'Did not finish' });

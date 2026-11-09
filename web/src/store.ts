@@ -1,8 +1,8 @@
 import { create } from 'zustand';
-import type { Bot, LiveState, Routine, Row, ServerEvent, User } from '@shared/types';
+import type { Bot, ComputerState, LiveState, Routine, Row, ServerEvent, User } from '@shared/types';
 import { api } from './lib/api';
 
-export type ModalKind = 'create' | 'search' | 'group' | null;
+export type ModalKind = 'create' | 'search' | 'apps' | 'group' | null;
 
 interface Transcript { generation: number; bySeq: Record<number, Row>; loaded: boolean }
 
@@ -17,13 +17,21 @@ interface State {
   transcripts: Record<string, Transcript>;
   routines: Record<string, Routine[]>;
   sseConnected: boolean;
+  /** Wake requests in flight / failed, per Bot (the running state itself comes from live.screen). */
+  computerWake: Record<string, { starting: boolean; error: string | null }>;
+  /** Bumped on every `connections` event so open views can refetch. */
+  connectionsVersion: number;
 
   detailsOpen: boolean;
   sidebarCollapsed: boolean;
   modal: ModalKind;
+  viewerOpen: boolean;
+  /** Set when a chat card opened Connect Apps, so connecting tells that Bot. */
+  appsContext: { botId: string; seq: number; query: string } | null;
 
   checkAuth(): Promise<void>;
   loadBots(): Promise<void>;
+  wakeComputer(botId: string): Promise<void>;
   selectBot(id: string): void;
   loadRows(id: string): Promise<void>;
   loadRoutines(id: string): Promise<void>;
@@ -49,9 +57,13 @@ export const useStore = create<State>((set, get) => ({
   transcripts: {},
   routines: {},
   sseConnected: false,
+  computerWake: {},
+  connectionsVersion: 0,
   detailsOpen: lsGet(LS_DETAILS) !== '0',
   sidebarCollapsed: lsGet(LS_SIDEBAR) === '1',
   modal: null,
+  viewerOpen: false,
+  appsContext: null,
 
   async checkAuth() {
     try {
@@ -60,6 +72,13 @@ export const useStore = create<State>((set, get) => ({
     } catch {
       set({ user: null, authChecked: true });
     }
+  },
+
+  async wakeComputer(botId) {
+    const setWake = (w: { starting: boolean; error: string | null }) => set((s) => ({ computerWake: { ...s.computerWake, [botId]: w } }));
+    setWake({ starting: true, error: null });
+    try { await api.ensureComputer(botId); setWake({ starting: false, error: null }); }
+    catch (e) { setWake({ starting: false, error: (e as Error).message }); }
   },
 
   async loadBots() {
@@ -143,6 +162,9 @@ export const useStore = create<State>((set, get) => ({
       case 'routines':
         if (s.routines[ev.botId] || ev.botId === s.selectedBotId) s.loadRoutines(ev.botId).catch(console.error);
         return;
+      case 'connections':
+        set((st) => ({ connectionsVersion: st.connectionsVersion + 1 }));
+        return;
       case 'tasks':
       case 'memories':
         // Picked up by configStore.ts (Tasks view, Library/Tasks tabs, bot settings).
@@ -170,4 +192,15 @@ export const displayName = (b: Pick<Bot, 'name' | 'label'>) => (b.label ? `${b.n
 
 export function useSelectedBot(): Bot | undefined {
   return useStore((s) => s.bots.find((b) => b.id === s.selectedBotId));
+}
+
+/** A Bot's computer: awake while its screen runs, waking while a request is in flight. */
+export function useComputer(botId: string | undefined): ComputerState | null {
+  const on = useStore((s) => (botId ? !!s.live[botId]?.screen : false));
+  const wake = useStore((s) => (botId ? s.computerWake[botId] : undefined));
+  if (!botId) return null;
+  if (on) return { status: 'running', error: null };
+  if (wake?.starting) return { status: 'starting', error: null };
+  if (wake?.error) return { status: 'error', error: wake.error };
+  return { status: 'suspended', error: null };
 }

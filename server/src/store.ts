@@ -118,6 +118,11 @@ export function clearConversation(botId: string) {
   hub.emit(b.user_id, { type: 'cleared', botId, generation: b.generation + 1 });
 }
 
+// ---------- tool rows ----------
+
+/** Claude tool_use id -> transcript row, so approvals can mark the step they're holding up. */
+export const toolRows = new Map<string, { botId: string; seq: number }>();
+
 // ---------- live state ----------
 
 const live = new Map<string, LiveState>();

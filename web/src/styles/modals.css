@@ -122,3 +122,14 @@
 .group-pick__opt:hover { background: var(--color-bg-hover); }
 .group-pick__opt.is-active { background: var(--color-bg-active, var(--color-bg-hover)); }
 .group-pick__name { flex: 1; font-size: 13px; line-height: 18px; color: var(--color-ink); }
+
+/* Connect Apps: key form for apps that need a token, and custom MCP servers */
+.app-connect { gap: 14px; max-width: 520px; }
+.app-connect__intro { display: flex; align-items: center; gap: 12px; }
+.app-connect__desc { font-size: 13px; line-height: 18px; color: var(--color-text-secondary); }
+.app-connect__help { margin: 0; font-size: 13px; line-height: 19px; color: var(--color-text-secondary); }
+.app-connect__help a { color: inherit; text-decoration: underline; }
+.app-connect__field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; line-height: 18px; font-weight: 500; }
+.app-connect__field .pill-input { flex: none; height: 36px; }
+.app-connect__error { white-space: normal; max-height: none; }
+.app-connect__actions { display: flex; gap: 8px; justify-content: flex-end; }

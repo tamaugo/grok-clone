@@ -67,9 +67,11 @@ export interface ToolCallBody {
   name: string;
   /** Human phrase, e.g. "Clicking on screen". */
   label: string;
-  status: 'running' | 'done' | 'error';
+  status: 'running' | 'done' | 'error' | 'awaiting-approval' | 'denied';
   args?: unknown;
   summary?: string;
+  /** Data URL thumbnail for computer actions. */
+  screenshot?: string;
 }
 
 export type CardBody =
@@ -103,6 +105,12 @@ export type CardBody =
       reason: string;
       status: 'pending' | 'connected' | 'skipped';
     };
+
+/** A Bot's computer as the UI sees it (derived from LiveState.screen plus wake requests in flight). */
+export interface ComputerState {
+  status: 'absent' | 'creating' | 'starting' | 'running' | 'suspending' | 'suspended' | 'resuming' | 'error' | 'stopped';
+  error: string | null;
+}
 
 /** A connected app (an MCP server). Secret header/env values never leave the server. */
 export interface ConnectedApp {

@@ -85,13 +85,6 @@ function SenderLabel({ from }: { from: NonNullable<MessageBody['from']> }) {
   );
 }
 
-/** A short hint of what a step did, e.g. the shell command or file. */
-function stepDetail(c: ToolCallBody): string | null {
-  const a = (c.args ?? {}) as Record<string, unknown>;
-  const v = a.command ?? a.file_path ?? a.pattern ?? a.query ?? a.url ?? a.bot_name ?? a.title ?? a.name;
-  return typeof v === 'string' ? v.slice(0, 120) : c.summary ?? null;
-}
-
 function Steps({ rows, hideRunning }: { rows: Row[]; hideRunning: boolean }) {
   const [open, setOpen] = useState(false);
   const calls = rows.map((r) => r.body as ToolCallBody);
@@ -110,7 +103,10 @@ function Steps({ rows, hideRunning }: { rows: Row[]; hideRunning: boolean }) {
             <li key={c.callId} className={`step is-${c.status}`}>
               <span className="step__dot" />
               <span className="step__label">{c.label}</span>
-              {c.status === 'error' ? <span className="step__summary">{c.summary || 'Failed'}</span> : stepDetail(c) && <span className="step__summary">{stepDetail(c)}</span>}
+              {c.summary && <span className="step__summary">{c.summary}</span>}
+              {c.status === 'error' && <span className="step__summary">Failed</span>}
+              {c.status === 'denied' && <span className="step__summary">Not allowed</span>}
+              {c.screenshot && <img className="step__shot" src={c.screenshot} alt="" />}
             </li>
           ))}
         </ul>

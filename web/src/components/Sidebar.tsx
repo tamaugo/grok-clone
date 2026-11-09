@@ -133,11 +133,15 @@ export function Sidebar() {
                 onClose={() => setAccountMenu(false)}
                 items={[
                   { label: 'Settings', hint: '⌘,', onSelect: () => useConfigUI.getState().openAppSettings() },
+                  { label: 'Connect apps', onSelect: () => setModal('apps') },
                 ]}
               />
             )}
           </div>
         )}
+        <button type="button" className="icon-btn icon-btn--bordered" onClick={() => setModal('apps')} aria-label="Connect apps" title="Connect apps">
+          <Icon name="apps" />
+        </button>
       </div>
     </aside>
   );

@@ -1,12 +1,23 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
+import type { ConnectedApp } from '@shared/types';
+import { BotAvatarFor } from '../../avatar/BotAvatar';
+import type { ComputerState } from '@shared/types';
+import { configApi, type ComputerDetails } from '../../lib/configApi';
+import { relativeShort } from '../../lib/time';
 import { useConfigUI, type AppSection, type Theme } from '../../configStore';
+import { useComputer, useStore } from '../../store';
+import { computerStatusText } from '../DetailsPanel';
 import { Icon } from '../Icon';
+import { ToolkitLogo } from '../ToolkitLogo';
 import { Glyph } from './glyphs';
+import { ConfirmButton } from './ui';
 
 const SECTIONS: { id: AppSection; label: string }[] = [
   { id: 'general', label: 'General' },
-  { id: 'server', label: 'Server' },
+  { id: 'computer', label: 'Computer' },
+  { id: 'permissions', label: 'Permissions' },
+  { id: 'apps', label: 'Connected apps' },
 ];
 
 /** Full-window settings page, opened from the account menu. */
@@ -35,7 +46,9 @@ export function AppSettings() {
         <button type="button" className="app-settings__close icon-btn" onClick={close} aria-label="Close settings" title="Close (Esc)"><Icon name="close" opacity={0.8} /></button>
         <div className="app-settings__page">
           {section === 'general' && <GeneralSection />}
-          {section === 'server' && <ServerSection />}
+          {section === 'computer' && <ComputerSection />}
+          {section === 'permissions' && <PermissionsSection />}
+          {section === 'apps' && <AppsSection />}
         </div>
       </div>
     </div>,
@@ -87,31 +100,177 @@ function GeneralSection() {
 
 // ---------------------------------------------------------------------------
 
-interface Health { ok: boolean; running: number; maxConcurrent: number; memAvailableMb: number }
+const screenLabel = (display: number) => `Screen ${display - 100}`;
 
-function ServerSection() {
-  const [h, setH] = useState<Health | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  useEffect(() => {
-    const load = () => fetch('/api/health').then((r) => r.json()).then((j: Health) => { setH(j); setErr(null); }).catch((e) => setErr(String(e?.message ?? e)));
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
+interface Health { running: number; maxConcurrent: number; memAvailableMb: number }
+
+function ComputerSection() {
+  const bots = useStore((s) => s.bots);
+  const live = useStore((s) => s.live);
+  const primary = bots.find((b) => b.isPrimary);
+  const primaryComputer = useComputer(primary?.id);
+  const [details, setDetails] = useState<ComputerDetails | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
+  const [busy, setBusy] = useState<'wake' | 'sleep' | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const awake = Object.values(live).filter((l) => l.screen).length;
+  const load = useCallback(() => {
+    configApi.computerDetails().then(setDetails).catch(() => {});
+    fetch('/api/health').then((r) => r.json()).then(setHealth).catch(() => {});
   }, []);
+  useEffect(() => { load(); }, [load, awake]);
+  useEffect(() => { const t = setInterval(load, 5000); return () => clearInterval(t); }, [load]);
+
+  const running = awake > 0;
+  const transitioning = primaryComputer?.status === 'starting';
+  const status: ComputerState['status'] = running ? 'running' : transitioning ? 'starting' : primaryComputer?.status === 'error' ? 'error' : 'suspended';
+  const act = async (kind: 'wake' | 'sleep') => {
+    setBusy(kind); setNote(null);
+    try {
+      if (kind === 'wake') { if (primary) await useStore.getState().wakeComputer(primary.id); }
+      else await Promise.all((details?.screens ?? []).map((s) => configApi.sleep(s.botId)));
+    }
+    catch (e) { setNote((e as Error).message); }
+    finally { setBusy(null); load(); }
+  };
+  const byId = new Map(bots.map((b) => [b.id, b]));
+
   return (
     <>
-      <PageHead title="Server" sub="Your Bots run as Claude Code on your own VM. To protect its memory, only a few work at once; the rest wait in line." />
+      <PageHead title="Computer" sub="Your Bots share your VM. Each Bot works on its own screen." />
       <section className="cfg-section">
         <div className="cfg-card">
           <div className="cfg-row">
-            <span className={`computer-status-dot is-${h ? (h.running ? 'busy' : 'on') : 'off'}`} aria-hidden />
+            <span className={`computer-status-dot is-${running ? 'on' : transitioning ? 'busy' : 'off'}`} aria-hidden />
             <div className="cfg-row__text">
-              <div className="cfg-row__title">{h ? `${h.running} of ${h.maxConcurrent} Bot slots in use` : err ? 'Server unreachable' : 'Checking…'}</div>
-              <div className="cfg-row__sub">{h ? `${h.memAvailableMb.toLocaleString()} MB memory available` : err ?? ''}</div>
+              <div className="cfg-row__title">Bots’ computer · {computerStatusText({ status, error: primaryComputer?.error ?? null })}</div>
+              <div className="cfg-row__sub">
+                {details ? `Goes to sleep after ${details.idleMinutes} idle minutes when nobody is watching. Starts again on its own once a Bot has work.` : 'Checking…'}
+              </div>
+            </div>
+            {running ? (
+              <button type="button" className="cfg-btn cfg-btn--secondary" disabled={!!busy} onClick={() => act('sleep')}>{busy === 'sleep' ? 'Going to sleep…' : 'Sleep'}</button>
+            ) : (
+              <button type="button" className="cfg-btn cfg-btn--primary" disabled={transitioning || !!busy || !primary} onClick={() => act('wake')}>{busy === 'wake' || transitioning ? 'Waking…' : 'Wake'}</button>
+            )}
+          </div>
+          {primaryComputer?.error && status === 'error' && <div className="cfg-error cfg-error--inset">{primaryComputer.error}</div>}
+          {note && <div className="cfg-error cfg-error--inset">{note}</div>}
+        </div>
+      </section>
+
+      <section className="cfg-section">
+        <div className="cfg-section__label">Screens in use</div>
+        <div className="cfg-card">
+          {!details ? <div className="cfg-empty cfg-empty--flat">Loading…</div> : details.screens.length === 0 ? (
+            <div className="cfg-empty cfg-empty--flat">No Bot has used the computer yet.</div>
+          ) : details.screens.map((s) => {
+            const bot = byId.get(s.botId);
+            return (
+              <div key={s.botId} className="cfg-row">
+                {bot ? <BotAvatarFor bot={bot} size={28} /> : <span className="cfg-row__ph" />}
+                <div className="cfg-row__text">
+                  <div className="cfg-row__title">{bot?.name ?? 'Removed Bot'}</div>
+                  <div className="cfg-row__sub">{screenLabel(s.display)} · used {relativeShort(s.lastUsed) === 'now' ? 'just now' : `${relativeShort(s.lastUsed)}${/^\d/.test(relativeShort(s.lastUsed)) ? ' ago' : ''}`}</div>
+                </div>
+                <ConfirmButton
+                  className="cfg-btn cfg-btn--secondary"
+                  confirmLabel="Reset screen"
+                  title="Closes everything open on this screen"
+                  onConfirm={async () => { try { await configApi.sleep(s.botId); setNote(null); load(); } catch (e) { setNote((e as Error).message); } }}
+                >
+                  Reset
+                </ConfirmButton>
+              </div>
+            );
+          })}
+        </div>
+        <div className="cfg-field__hint">Reset closes every window on that Bot’s screen, so it starts clean next time. Up to {details?.maxScreens ?? 2} Bots can have a screen at once.</div>
+      </section>
+
+      <section className="cfg-section">
+        <div className="cfg-section__label">Memory</div>
+        <div className="cfg-card">
+          <div className="cfg-row">
+            <div className="cfg-row__text">
+              <div className="cfg-row__title">{health ? `${health.running} of ${health.maxConcurrent} Bots working` : 'Checking…'}</div>
+              <div className="cfg-row__sub">{health ? `${health.memAvailableMb.toLocaleString()} MB free. To protect your VM’s memory, extra Bots wait in line.` : ''}</div>
             </div>
           </div>
         </div>
-        <div className="cfg-field__hint">Limits are set with GROKBOT_MAX_CONCURRENT and GROKBOT_MIN_FREE_MB in the server’s .env file.</div>
+      </section>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+function humanizeTool(slug: string): { app: string; action: string } {
+  const parts = slug.split(/[_:]/).filter(Boolean);
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+  if (parts.length < 2) return { app: cap(slug), action: '' };
+  return { app: cap(parts[0]), action: cap(parts.slice(1).join(' ')) };
+}
+
+function PermissionsSection() {
+  const [policies, setPolicies] = useState<{ tool: string; mode: string }[] | null>(null);
+  const load = useCallback(() => { configApi.policies().then((r) => setPolicies(r.policies)).catch(() => setPolicies([])); }, []);
+  useEffect(() => { load(); }, [load]);
+  return (
+    <>
+      <PageHead title="Permissions" sub="Actions your Bots can take without asking first. Remove one and they’ll ask again next time." />
+      <section className="cfg-section">
+        <div className="cfg-card">
+          {policies === null ? <div className="cfg-empty cfg-empty--flat">Loading…</div> : policies.length === 0 ? (
+            <div className="cfg-empty cfg-empty--flat">Nothing here yet. When you choose “Always allow” on an approval, it shows up here.</div>
+          ) : policies.map((p) => {
+            const h = humanizeTool(p.tool);
+            return (
+              <div key={p.tool} className="cfg-row">
+                <div className="cfg-row__text">
+                  <div className="cfg-row__title">{h.app}{h.action ? ` · ${h.action}` : ''}</div>
+                  <div className="cfg-row__sub">{p.mode === 'always_allow' ? 'Always allowed' : p.mode === 'blocked' ? 'Never allowed' : 'Asks first'} · <code className="cfg-code">{p.tool}</code></div>
+                </div>
+                <button type="button" className="cfg-btn cfg-btn--secondary" onClick={() => configApi.deletePolicy(p.tool).then(load).catch(() => {})}>Ask again</button>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+function AppsSection() {
+  const version = useStore((s) => s.connectionsVersion);
+  const [apps, setApps] = useState<ConnectedApp[] | null>(null);
+  useEffect(() => { configApi.connectedApps().then((r) => setApps(r.apps)).catch(() => setApps([])); }, [version]);
+  const openApps = () => { useConfigUI.getState().closeAppSettings(); useStore.getState().setModal('apps'); };
+  return (
+    <>
+      <PageHead title="Connected apps" sub="Apps your Bots can use for you, like email, calendar and docs." />
+      <section className="cfg-section">
+        <div className="cfg-card">
+          <div className="cfg-row">
+            <div className="cfg-row__text">
+              <div className="cfg-row__title">{apps === null ? 'Checking…' : apps.length ? `${apps.length} app${apps.length === 1 ? '' : 's'} connected` : 'No apps connected yet'}</div>
+              <div className="cfg-row__sub">Bots ask before doing anything that changes data in an app.</div>
+            </div>
+            <button type="button" className="cfg-btn cfg-btn--primary" onClick={openApps}>{apps?.length ? 'Manage apps' : 'Connect apps'}</button>
+          </div>
+          {apps?.map((a) => (
+            <div key={a.slug} className="cfg-row">
+              <ToolkitLogo name={a.name} logo={a.logo ?? undefined} size={28} radius={7} />
+              <div className="cfg-row__text">
+                <div className="cfg-row__title">{a.name}</div>
+                {a.description && <div className="cfg-row__sub">{a.description}</div>}
+              </div>
+              <span className="cfg-chip">Connected</span>
+            </div>
+          ))}
+        </div>
       </section>
     </>
   );

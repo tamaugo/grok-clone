@@ -153,9 +153,24 @@ function run(cmd: string, args: string[], display: number, timeout = 20_000): Pr
   });
 }
 
+const lastShots = new Map<string, Buffer>();
+
 export async function screenshot(botId: string): Promise<Buffer> {
   const s = await screenFor(botId);
-  return run('import', ['-window', 'root', '-quality', '72', 'jpeg:-'], s.display);
+  const img = await run('import', ['-window', 'root', '-quality', '72', 'jpeg:-'], s.display);
+  lastShots.set(botId, img);
+  return img;
+}
+
+/** Small data-URL thumbnail of the Bot's latest screenshot, for the transcript's step list. */
+export async function lastShotThumbnail(botId: string): Promise<string | null> {
+  const img = lastShots.get(botId);
+  if (!img) return null;
+  const small = await new Promise<Buffer>((resolve, reject) => {
+    const p = execFile('convert', ['jpeg:-', '-resize', '480x', '-quality', '60', 'jpeg:-'], { encoding: 'buffer', maxBuffer: 8 * 1024 * 1024, timeout: 10_000 }, (err, out) => (err ? reject(err) : resolve(out)));
+    p.stdin?.end(img);
+  });
+  return `data:image/jpeg;base64,${small.toString('base64')}`;
 }
 
 /** Run xdotool on the Bot's screen. */

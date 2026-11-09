@@ -1,4 +1,4 @@
-import type { Bot, LiveState, Routine, Row, User } from '@shared/types';
+import type { Bot, ConnectedApp, LiveState, Routine, Row, User } from '@shared/types';
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -20,6 +20,20 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   return res.json() as Promise<T>;
 }
 
+export interface AppInput {
+  name: string;
+  description?: string;
+  logo?: string;
+  transport?: 'http' | 'sse' | 'stdio';
+  url?: string;
+  command?: string;
+  args?: string[];
+  headers?: Record<string, string>;
+  env?: Record<string, string>;
+}
+
+export interface AppTest { ok: boolean; tools: { name: string; description?: string }[]; error?: string }
+
 export interface RoomMember { id: string; name: string; label: string; avatarShape: string; avatarColor: string }
 
 export const api = {
@@ -38,6 +52,16 @@ export const api = {
 
   routines: (id: string) => req<{ routines: Routine[] }>('GET', `/bots/${id}/routines`),
   setRoutine: (rid: string, enabled: boolean) => req<{ routine: Routine }>('PATCH', `/routines/${rid}`, { enabled }),
+
+  approve: (approvalId: string, decision: 'allow' | 'always' | 'deny') => req<{ ok: true }>('POST', `/approvals/${approvalId}`, { decision }),
+
+  ensureComputer: (botId: string) => req<{ ok: true }>('POST', `/bots/${botId}/computer/start`),
+  sleepComputer: (botId: string) => req<{ ok: boolean }>('POST', `/bots/${botId}/computer/stop`),
+
+  apps: () => req<{ apps: ConnectedApp[] }>('GET', '/apps'),
+  addApp: (app: AppInput & { botId?: string; seq?: number }) => req<{ app: ConnectedApp; test: AppTest }>('POST', '/apps', app),
+  testApp: (slug: string) => req<AppTest>('POST', `/apps/${slug}/test`),
+  disconnect: (slug: string) => req<{ ok: true }>('DELETE', `/apps/${slug}`),
 
   roomMembers: (id: string) => req<{ members: RoomMember[] }>('GET', `/rooms/${id}/members`),
   setRoomMembers: (id: string, botIds: string[]) => req<{ ok: true; members: string[] }>('PUT', `/rooms/${id}/members`, { botIds }),

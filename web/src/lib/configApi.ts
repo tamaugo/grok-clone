@@ -1,4 +1,4 @@
-import type { Bot, LibraryFile, Memory, Routine, Skill, Task } from '@shared/types';
+import type { Bot, ConnectedApp, LibraryFile, Memory, Routine, Skill, Task } from '@shared/types';
 import { ApiError } from './api';
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -25,6 +25,12 @@ export interface BotSettingsBundle {
 
 export interface LibraryListing { status: 'ok' | 'error'; path: string; files: LibraryFile[]; error?: string }
 
+export interface ComputerDetails {
+  screens: { botId: string; display: number; lastUsed: number }[];
+  maxScreens: number;
+  idleMinutes: number;
+}
+
 export type BotPatch = Partial<Pick<Bot, 'name' | 'label' | 'description' | 'instructions' | 'avatarShape' | 'avatarColor' | 'effort' | 'mode'>>;
 
 export const configApi = {
@@ -46,6 +52,14 @@ export const configApi = {
 
   tasks: () => req<{ tasks: Task[] }>('GET', '/tasks'),
   botTasks: (botId: string) => req<{ tasks: Task[] }>('GET', `/bots/${botId}/tasks`),
+
+  computerDetails: () => req<ComputerDetails>('GET', '/computer'),
+  sleep: (botId: string) => req<{ ok: boolean }>('POST', `/bots/${botId}/computer/stop`),
+
+  policies: () => req<{ policies: { tool: string; mode: string }[] }>('GET', '/policies'),
+  deletePolicy: (tool: string) => req<{ ok: true }>('DELETE', `/policies/${encodeURIComponent(tool)}`),
+
+  connectedApps: () => req<{ apps: ConnectedApp[] }>('GET', '/apps'),
 
   files: (botId: string, path = '') => req<LibraryListing>('GET', `/bots/${botId}/files?path=${encodeURIComponent(path)}`),
   downloadFile: (botId: string, path: string) => req<{ url: string }>('POST', `/bots/${botId}/files/download`, { path }),

@@ -1,7 +1,7 @@
 import { db, now } from '../db.js';
 import { newId } from '../lib/ids.js';
 import { hub } from '../lib/hub.js';
-import { appendRow, getBotRow, getRow, setLive, updateRow } from '../store.js';
+import { appendRow, getBotRow, getRow, setLive, toolRows, updateRow } from '../store.js';
 import { appBySlug, APP_PREFIX } from '../apps.js';
 
 /**
@@ -16,7 +16,13 @@ export type ApprovalDecision = 'allow' | 'always' | 'deny';
 const waiting = new Map<string, (status: 'allowed' | 'always' | 'denied' | 'expired') => void>();
 const APPROVAL_TIMEOUT_MS = 30 * 60_000;
 
-const READ_WORDS = /(^|_)(get|list|search|read|fetch|find|query|retrieve|view|describe|count|lookup|check|show|download|export|status|info)(_|$)/i;
+const READ_WORDS = new Set('get list search read fetch find query retrieve view describe count lookup check show download export status info resolve ask'.split(' '));
+
+/** "API-post-search", "list_issues", "getUser" -> words, to tell reading tools from ones that change data. */
+const toolWords = (tool: string) => tool.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+const isReadOnly = (tool: string) => toolWords(tool).some((w) => READ_WORDS.has(w)) && !toolWords(tool).some((w) => WRITE_WORDS.has(w));
+// HTTP verbs (post, put, patch) are left out: "API-post-search" reads, "API-post-page" asks because nothing in it reads.
+const WRITE_WORDS = new Set('create update delete remove send write add set move archive merge publish invite cancel refund pay'.split(' '));
 
 /** "mcp__app_github__create_issue" -> { slug: 'github', tool: 'create_issue' } */
 export function parseAppTool(name: string): { slug: string; tool: string } | null {
@@ -29,7 +35,7 @@ export const policyKey = (slug: string, tool: string) => `${slug}:${tool}`;
 export function policyFor(userId: string, slug: string, tool: string): 'always_allow' | 'needs_approval' | 'blocked' {
   const p = db.prepare('SELECT mode FROM policies WHERE user_id=? AND tool=?').get(userId, policyKey(slug, tool)) as any;
   if (p?.mode) return p.mode;
-  return READ_WORDS.test(tool) ? 'always_allow' : 'needs_approval';
+  return isReadOnly(tool) ? 'always_allow' : 'needs_approval';
 }
 
 export const humanizeTool = (tool: string) => tool.replace(/[_-]+/g, ' ').trim().toLowerCase();
@@ -45,7 +51,7 @@ function describeArgs(args: any): string {
 }
 
 /** Decide whether a tool call may run. Resolves when the user answers (or right away when no approval is needed). */
-export async function requestPermission(botId: string, toolName: string, input: any): Promise<{ allow: boolean; message?: string }> {
+export async function requestPermission(botId: string, toolName: string, input: any, toolUseId?: string): Promise<{ allow: boolean; message?: string }> {
   const app = parseAppTool(toolName);
   if (!app) return { allow: true }; // the Bot's own tools, shell, files and computer
   const bot = getBotRow(botId);
@@ -62,6 +68,12 @@ export async function requestPermission(botId: string, toolName: string, input: 
     args: input, status: 'pending',
   });
   db.prepare('INSERT INTO approvals(id,bot_id,row_seq,tool,status,created_at) VALUES (?,?,?,?,?,?)').run(id, botId, card.seq, policyKey(app.slug, app.tool), 'pending', now());
+  const step = toolUseId ? toolRows.get(toolUseId) : undefined;
+  const markStep = (status: 'awaiting-approval' | 'running' | 'denied') => {
+    const r = step && getRow(step.botId, step.seq);
+    if (r?.body.type === 'tool-call') updateRow(step!.botId, step!.seq, { ...r.body, status, summary: status === 'denied' ? 'Not allowed' : r.body.summary });
+  };
+  markStep('awaiting-approval');
   setLive(botId, { activity: { kind: 'waiting_for_you', since: now() }, awaiting: { reason: `${info?.name ?? app.slug}: ${humanizeTool(app.tool)}`, since: now() } });
   hub.emit(bot.user_id, { type: 'tasks', botId });
 
@@ -70,6 +82,7 @@ export async function requestPermission(botId: string, toolName: string, input: 
     waiting.set(id, (s) => { clearTimeout(t); resolve(s); });
   });
   setLive(botId, { activity: { kind: 'thinking', since: now() }, awaiting: null });
+  markStep(status === 'allowed' || status === 'always' ? 'running' : 'denied');
   if (status === 'allowed' || status === 'always') return { allow: true };
   return {
     allow: false,

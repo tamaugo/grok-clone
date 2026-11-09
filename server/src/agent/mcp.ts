@@ -44,7 +44,7 @@ async function handle(ctx: ToolCtx, m: any): Promise<object | null> {
       if (m.params?.name === PERMISSION_TOOL.name) {
         // Claude Code's --permission-prompt-tool contract: reply with allow (+ input) or deny (+ message).
         const a = m.params?.arguments ?? {};
-        const r = await requestPermission(ctx.botId, String(a.tool_name ?? ''), a.input);
+        const r = await requestPermission(ctx.botId, String(a.tool_name ?? ''), a.input, a.tool_use_id ? String(a.tool_use_id) : undefined);
         const text = JSON.stringify(r.allow ? { behavior: 'allow', updatedInput: a.input ?? {} } : { behavior: 'deny', message: r.message });
         return ok(m.id, { content: [{ type: 'text', text }] });
       }

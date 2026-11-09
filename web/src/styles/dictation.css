@@ -1,0 +1,5 @@
+/* ---------- composer: dictation button states ---------- */
+/* ---------- composer: dictation + call button states ---------- */
+.composer__btn.is-recording { background: var(--color-danger); color: #FFFFFF; animation: breathe 1.2s ease-in-out infinite; }
+.composer__btn.is-recording > * { opacity: 1 !important; }
+.composer__btn.is-transcribing { animation: breathe 0.9s ease-in-out infinite; }

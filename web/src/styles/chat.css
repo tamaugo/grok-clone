@@ -193,3 +193,31 @@
   max-width: 960px; margin: 0 auto 8px; padding: 6px 12px; border-radius: 12px; background: var(--color-danger-bg); color: var(--color-danger-text);
   font-size: 13px; line-height: 18px; display: flex; align-items: center; justify-content: space-between; gap: 8px;
 }
+
+/* ---------- composer: pasted / dropped images ---------- */
+.composer.has-attachments { flex-wrap: wrap; }
+.composer__attachments { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 4px 0; }
+.composer__thumb {
+  position: relative; width: 64px; height: 64px; border-radius: 12px; overflow: hidden; flex-shrink: 0;
+  background: var(--color-bg-tertiary); box-shadow: var(--color-border-tertiary) 0 0 0 0.5px inset;
+}
+.composer__thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.composer__thumb.is-uploading img { opacity: 0.45; animation: breathe 1.2s ease-in-out infinite; }
+.composer__thumb-x {
+  position: absolute; top: 4px; right: 4px; width: 18px; height: 18px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: #000000B3; color: #FFFFFF; opacity: 0.9; transition: opacity 120ms, transform 120ms;
+}
+.composer__thumb-x:hover { opacity: 1; transform: scale(1.08); }
+.composer-area.is-dragging .composer { border-color: var(--bot-action, var(--color-primary)); border-style: dashed; }
+
+/* ---------- message images ---------- */
+.bubble-images { display: flex; flex-wrap: wrap; gap: 6px; max-width: 560px; }
+.bubble-wrap.is-right .bubble-images { justify-content: flex-end; }
+.bubble-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 100%; }
+.bubble-wrap.is-right .bubble-col { align-items: flex-end; }
+.bubble-image {
+  display: block; border-radius: 14px; overflow: hidden; line-height: 0;
+  background: var(--color-bg-tertiary); box-shadow: var(--color-border-tertiary) 0 0 0 0.5px inset;
+}
+.bubble-image img { display: block; max-width: min(320px, 100%); max-height: 260px; width: auto; height: auto; object-fit: contain; }

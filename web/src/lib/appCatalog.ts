@@ -2,7 +2,7 @@ import type { AppInput } from './api';
 
 /**
  * Apps you can connect without Composio: each is an MCP server. Entries that need a key show a
- * short form; the rest connect in one click. Built-in capabilities are listed so the catalog
+ * short form, entries marked `oauth` open the app's own sign-in, and the rest connect in one click. Built-in capabilities are listed so the catalog
  * reads like Grok Bot's ("Built in").
  */
 
@@ -21,6 +21,8 @@ export interface CatalogApp {
   categories: string[];
   domain?: string;
   noAuth?: boolean;
+  /** Connects with a sign-in at the app (OAuth) instead of a key. */
+  oauth?: boolean;
   /** How to get the key, shown on the connect form. */
   help?: { text: string; url: string };
   fields?: CatalogField[];
@@ -44,6 +46,16 @@ export const CATALOG: CatalogApp[] = [
     help: { text: 'Create an internal integration, copy its secret, then share the pages it should see with it.', url: 'https://www.notion.so/profile/integrations' },
     fields: [{ key: 'token', label: 'Integration secret', placeholder: 'ntn_…', target: { env: 'NOTION_TOKEN' } }],
     config: { transport: 'stdio', command: 'npx', args: ['-y', '@notionhq/notion-mcp-server'] },
+  },
+  {
+    slug: 'linear', name: 'Linear', domain: 'linear.app', categories: ['productivity', 'developer tools'], oauth: true,
+    description: 'Issues, projects, cycles and comments. Connects with a Linear sign-in.',
+    config: { transport: 'http', url: 'https://mcp.linear.app/mcp' },
+  },
+  {
+    slug: 'sentry', name: 'Sentry', domain: 'sentry.io', categories: ['developer tools'], oauth: true,
+    description: 'Errors, issues, releases and performance. Connects with a Sentry sign-in.',
+    config: { transport: 'http', url: 'https://mcp.sentry.dev/mcp' },
   },
   {
     slug: 'github', name: 'GitHub', domain: 'github.com', categories: ['developer tools'],

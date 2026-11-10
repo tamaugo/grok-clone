@@ -21,7 +21,9 @@ export const env = {
   maxConcurrent: num(process.env.GROKBOT_MAX_CONCURRENT, 2),
   /** Don't start another Bot unless at least this much memory is available. */
   minFreeMb: num(process.env.GROKBOT_MIN_FREE_MB, 600),
-  /** Max Bot computers (virtual screens + browser) running at once. */
+  /** Chromium (or Chrome) that each Bot's headless browser runs on. Empty = look in the usual places. */
+  chromiumPath: process.env.CHROMIUM_PATH ?? '',
+  /** Max Bot computers (headless browsers) running at once. */
   maxScreens: num(process.env.GROKBOT_MAX_SCREENS, 2),
   /** Put a Bot's computer to sleep after this many idle minutes with nobody watching. */
   screenIdleMin: num(process.env.GROKBOT_SCREEN_IDLE_MIN, 15),

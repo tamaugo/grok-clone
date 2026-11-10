@@ -7,6 +7,8 @@ import type { MessageBody, ToolCallBody } from '../types.js';
 import { systemPrompt } from './prompt.js';
 import { runClaude } from './claude.js';
 import { openTurn } from './mcp.js';
+import { formatClock, isUsageLimit, retryDelayMs } from './limits.js';
+import { refreshOAuthTokens } from '../oauth.js';
 import { activityFor, MCP_PREFIX, type ToolCtx } from './tools.js';
 
 export type Trigger =
@@ -21,19 +23,53 @@ const queues = new Map<string, Promise<void>>();
 const aborts = new Map<string, AbortController>();
 const cancelEpochs = new Map<string, number>();
 
-export function enqueue(botId: string, trigger: Trigger) {
+/** A turn that hit Claude's usage limit and is being tried again. */
+interface Retry { tries: number; firstAt: number }
+
+export function enqueue(botId: string, trigger: Trigger, retry?: Retry) {
+  // A new message from the user replaces any turn waiting to be retried.
+  if (trigger.type === 'user' && !retry) cancelRetries(botId);
   const epoch = cancelEpochs.get(botId) ?? 0;
   const prev = queues.get(botId) ?? Promise.resolve();
   const next = prev
-    .then(() => { if ((cancelEpochs.get(botId) ?? 0) === epoch) return runTurn(botId, trigger); })
+    .then(() => { if ((cancelEpochs.get(botId) ?? 0) === epoch) return runTurn(botId, trigger, retry); })
     .catch((e) => console.error('[agent] turn failed', botId, e));
   queues.set(botId, next);
   next.finally(() => { if (queues.get(botId) === next) queues.delete(botId); });
 }
 
 export function interrupt(botId: string) {
+  cancelRetries(botId);
   cancelEpochs.set(botId, (cancelEpochs.get(botId) ?? 0) + 1);
   aborts.get(botId)?.abort();
+}
+
+// ---------- usage limits: wait for the reset, then run the same turn again ----------
+
+const MAX_LIMIT_TRIES = 5;
+const MAX_LIMIT_WAIT_MS = 6 * 3600_000;
+const retryTimers = new Map<string, Set<ReturnType<typeof setTimeout>>>();
+
+function cancelRetries(botId: string) {
+  for (const t of retryTimers.get(botId) ?? []) clearTimeout(t);
+  retryTimers.delete(botId);
+}
+
+/** Returns when the turn will run again, or null when it has been retried enough. */
+function scheduleRetry(botId: string, generation: number, trigger: Trigger, prev: Retry | undefined, limitText: string): number | null {
+  const retry: Retry = { tries: (prev?.tries ?? 0) + 1, firstAt: prev?.firstAt ?? now() };
+  const at = now() + retryDelayMs(limitText);
+  if (retry.tries > MAX_LIMIT_TRIES || at - retry.firstAt > MAX_LIMIT_WAIT_MS) return null;
+  const timers = retryTimers.get(botId) ?? new Set();
+  retryTimers.set(botId, timers);
+  const t = setTimeout(() => {
+    timers.delete(t);
+    // Skip if the Bot was removed or its conversation was cleared while waiting.
+    if (getBotRow(botId)?.generation === generation) enqueue(botId, trigger, retry);
+  }, at - now());
+  t.unref();
+  timers.add(t);
+  return at;
 }
 
 export const isBotBusy = (botId: string) => queues.has(botId);
@@ -56,7 +92,7 @@ function triggerText(t: Trigger): string {
 
 // ---------- the turn ----------
 
-async function runTurn(botId: string, trigger: Trigger) {
+async function runTurn(botId: string, trigger: Trigger, retry?: Retry) {
   const bot = getBotRow(botId);
   if (!bot) return;
   const generation = bot.generation as number;
@@ -73,12 +109,14 @@ async function runTurn(botId: string, trigger: Trigger) {
       prompt: triggerText(trigger),
       systemPrompt: await systemPrompt(bot.user_id, botId),
       effort: bot.effort ?? 'medium',
+      model: bot.model ?? 'default',
       mcpUrl: `http://127.0.0.1:${env.port}/mcp`,
       mcpToken: mcp.token,
       signal: ctrl.signal,
       onQueued: (reason: string) => setLive(botId, { isRunning: true, activity: { kind: 'waiting_on_command', detail: reason, since: now() } }),
       onEvent: (ev: any) => stream.handle(ev),
     };
+    await refreshOAuthTokens();
     let res = await runClaude({ ...base, sessionId: bot.claude_session ?? null });
     if (res.resumeFailed) {
       // The saved session is gone (e.g. Claude's history was cleared): start a new one.
@@ -88,8 +126,15 @@ async function runTurn(botId: string, trigger: Trigger) {
     if (res.sessionId) db.prepare('UPDATE bots SET claude_session=? WHERE id=? AND generation=?').run(res.sessionId, botId, generation);
     stream.finish();
     if (res.isError) {
-      const limit = /limit|quota|rate/i.test(res.resultText);
-      appendRow(botId, 'notice', { type: 'notice', text: limit ? `Claude usage limit hit: ${res.resultText}` : `Claude reported an error: ${res.resultText || 'unknown error'}`, tone: limit ? 'warn' : 'error' }, generation);
+      if (isUsageLimit(res.resultText)) {
+        const at = scheduleRetry(botId, generation, trigger, retry, res.resultText);
+        const text = at
+          ? `Claude’s usage limit was reached. ${bot.name} will try again at ${formatClock(at)}. Send a message or press stop to cancel.`
+          : `Claude’s usage limit was reached and ${bot.name} has stopped retrying: ${res.resultText}`;
+        appendRow(botId, 'notice', { type: 'notice', text, tone: 'warn' }, generation);
+      } else {
+        appendRow(botId, 'notice', { type: 'notice', text: `Claude reported an error: ${res.resultText || 'unknown error'}`, tone: 'error' }, generation);
+      }
     } else if (trigger.type === 'system' && trigger.text.startsWith('[check-in]')) {
       noteCheckinOutcome(bot.user_id, stream.sentMessage);
     }
@@ -108,8 +153,8 @@ async function runTurn(botId: string, trigger: Trigger) {
 
 // ---------- Claude stream-json events -> transcript rows ----------
 
-/** Computer tools whose steps get a screenshot thumbnail. */
-const SHOT_TOOLS = new Set(['computer_screenshot', 'computer_click', 'computer_type', 'computer_key', 'computer_scroll', 'computer_drag', 'open_browser']);
+/** Browser tools whose steps get a screenshot thumbnail. */
+const SHOT_TOOLS = new Set(['browser_open', 'browser_snapshot', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_drag', 'browser_navigate', 'browser_tabs']);
 
 class TranscriptWriter {
   private msgSeq: number | null = null;

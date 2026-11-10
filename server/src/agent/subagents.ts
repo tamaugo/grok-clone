@@ -3,6 +3,7 @@ import { newId } from '../lib/ids.js';
 import { getLive } from '../store.js';
 import { stopScreen } from '../computer.js';
 import { expirePending } from './approvals.js';
+import { BOT_EFFORTS, BOT_MODELS } from '../types.js';
 
 /**
  * Subagents (Grok Bot: CheckSubagent / MessageSubagent / StopSubagent, `sand-subagent-*`).
@@ -17,7 +18,18 @@ export function initSubagents() {
   }
 }
 
-export function createSubagent(parentId: string, goal: string, label?: string) {
+/** Model / thinking level for a subagent; omitted (or empty) means "same as the parent". */
+export interface SubagentRouting { model?: string; effort?: string }
+
+export function createSubagent(parentId: string, goal: string, label?: string, routing: SubagentRouting = {}) {
+  const model = routing.model?.trim() || undefined;
+  const effort = routing.effort?.trim() || undefined;
+  if (model && !(BOT_MODELS as readonly string[]).includes(model)) {
+    throw new Error(`Invalid model "${model}". Allowed: ${BOT_MODELS.join(', ')} (or omit to use your own).`);
+  }
+  if (effort && !(BOT_EFFORTS as readonly string[]).includes(effort)) {
+    throw new Error(`Invalid effort "${effort}". Allowed: ${BOT_EFFORTS.join(', ')} (or omit to use your own).`);
+  }
   const p = db.prepare('SELECT * FROM bots WHERE id=?').get(parentId) as any;
   if (!p) throw new Error('parent not found');
   const active = (db.prepare('SELECT COUNT(*) n FROM bots WHERE parent_bot_id=? AND hidden=1').get(parentId) as any).n;
@@ -29,19 +41,21 @@ export function createSubagent(parentId: string, goal: string, label?: string) {
     `Work independently with your own tools in your parent's working folder. When you finish (or get blocked), call send_to_bot with bot_name "${p.name}" and a concise result, then stop. Do not message the user directly.` +
     (p.instructions ? `\n\nYour parent's standing instructions:\n${p.instructions}` : '');
   db.prepare(
-    `INSERT INTO bots(id,user_id,name,label,description,instructions,avatar_shape,avatar_color,mode,is_primary,effort,parent_bot_id,hidden,created_at,updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,0,?,?,1,?,?)`,
-  ).run(id, p.user_id, name, 'Subagent', `Subagent of ${p.name}`, instructions, p.avatar_shape, p.avatar_color, p.mode, p.effort, parentId, now(), now());
-  return { id, name, parentName: p.name as string, userId: p.user_id as string };
+    `INSERT INTO bots(id,user_id,name,label,description,instructions,avatar_shape,avatar_color,mode,is_primary,effort,model,parent_bot_id,hidden,created_at,updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?,1,?,?)`,
+  ).run(id, p.user_id, name, 'Subagent', `Subagent of ${p.name}`, instructions, p.avatar_shape, p.avatar_color, p.mode, effort ?? p.effort, model ?? p.model ?? 'default', parentId, now(), now());
+  return { id, name, parentName: p.name as string, userId: p.user_id as string, model: model ?? p.model ?? 'default', effort: (effort ?? p.effort) as string };
 }
 
 export function listSubagents(parentId: string) {
-  return (db.prepare('SELECT id, name, created_at FROM bots WHERE parent_bot_id=? AND hidden=1 ORDER BY created_at').all(parentId) as any[]).map((s) => {
+  return (db.prepare('SELECT id, name, model, effort, created_at FROM bots WHERE parent_bot_id=? AND hidden=1 ORDER BY created_at').all(parentId) as any[]).map((s) => {
     const last = db.prepare("SELECT body FROM rows WHERE bot_id=? AND kind='message' ORDER BY seq DESC LIMIT 1").get(s.id) as any;
     const live = getLive(s.id);
     return {
       id: s.id,
       name: s.name,
+      model: s.model ?? 'default',
+      effort: s.effort,
       running: live.isRunning,
       activity: live.activity?.kind ?? null,
       lastMessage: last ? String(JSON.parse(last.body).text ?? '').slice(0, 300) : null,
@@ -54,7 +68,7 @@ export function deleteSubagent(parentId: string, subId: string) {
   const s = db.prepare('SELECT user_id FROM bots WHERE id=? AND parent_bot_id=?').get(subId, parentId) as any;
   if (!s) return false;
   expirePending(subId);
-  stopScreen(subId, 'subagent stopped');
+  void stopScreen(subId, 'subagent stopped');
   db.prepare('DELETE FROM bots WHERE id=?').run(subId);
   return true;
 }

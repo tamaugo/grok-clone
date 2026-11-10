@@ -5,6 +5,7 @@ import readline from 'node:readline';
 import { db } from '../db.js';
 import { env } from '../env.js';
 import { appMcpServers } from '../apps.js';
+import { BOT_EFFORTS, BOT_MODELS } from '../types.js';
 
 /**
  * Runs one Bot turn through the Claude Code CLI in headless mode
@@ -29,13 +30,17 @@ export const libraryFor = (botId: string) => path.join(workspaceFor(botId), 'lib
 let running = 0;
 const waiters = new Set<() => void>();
 
-export function memAvailableMb(): number {
+/** Free memory in MB, or null where it can't be read (anything but Linux). */
+export function memAvailableKnownMb(): number | null {
   try {
     const m = fs.readFileSync('/proc/meminfo', 'utf8').match(/MemAvailable:\s+(\d+) kB/);
     if (m) return Math.floor(Number(m[1]) / 1024);
   } catch { /* not Linux */ }
-  return Number.MAX_SAFE_INTEGER;
+  return null;
 }
+
+/** For the memory gates: unknown counts as plenty, so Bots still run off Linux. */
+export const memAvailableMb = () => memAvailableKnownMb() ?? Number.MAX_SAFE_INTEGER;
 
 export const runningCount = () => running;
 
@@ -67,6 +72,8 @@ export interface RunOptions {
   systemPrompt: string;
   sessionId: string | null;
   effort: string;
+  /** A BOT_MODELS ID; 'default' falls back to CLAUDE_MODEL. */
+  model: string;
   mcpUrl: string;
   mcpToken: string;
   signal: AbortSignal;
@@ -76,7 +83,8 @@ export interface RunOptions {
 
 export interface RunResult { sessionId: string | null; isError: boolean; resultText: string; resumeFailed: boolean }
 
-const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+const EFFORTS = new Set<string>(BOT_EFFORTS);
+const MODELS = new Set<string>(BOT_MODELS);
 
 const ALLOWED_TOOLS = [
   'Bash', 'BashOutput', 'KillShell', 'Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Glob', 'Grep', 'LS',
@@ -115,7 +123,8 @@ function spawnClaude(o: RunOptions): Promise<RunResult> {
     '--mcp-config', mcpFile,
   ];
   if (EFFORTS.has(o.effort)) args.push('--effort', o.effort);
-  if (env.claudeModel) args.push('--model', env.claudeModel);
+  const model = MODELS.has(o.model) && o.model !== 'default' ? o.model : env.claudeModel;
+  if (model) args.push('--model', model);
   if (o.sessionId) args.push('--resume', o.sessionId);
 
   return new Promise((resolve, reject) => {

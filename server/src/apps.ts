@@ -23,6 +23,8 @@ export interface App {
   /** Header and env names only; values are secrets and never leave the server. */
   headerNames: string[];
   envNames: string[];
+  /** Connected with a sign-in (see oauth.ts) instead of a token you pasted. */
+  oauth: boolean;
   createdAt: number;
 }
 
@@ -41,7 +43,7 @@ export interface AppInput {
 const toApp = (r: any): App => ({
   slug: r.slug, name: r.name, description: r.description, logo: r.logo ?? null, transport: r.transport,
   url: r.url ?? null, command: r.command ?? null, args: JSON.parse(r.args),
-  headerNames: Object.keys(JSON.parse(r.headers)), envNames: Object.keys(JSON.parse(r.env)), createdAt: r.created_at,
+  headerNames: Object.keys(JSON.parse(r.headers)), envNames: Object.keys(JSON.parse(r.env)), oauth: !!r.oauth, createdAt: r.created_at,
 });
 
 export const listApps = () => (db.prepare('SELECT * FROM apps ORDER BY created_at').all() as any[]).map(toApp);
@@ -76,9 +78,17 @@ export function addApp(input: AppInput): App | string {
   return appBySlug(slug)!;
 }
 
+/** Removing an app also drops its "always allow" rules, so a different server given the same name later can't inherit them. */
 export function removeApp(slug: string) {
   db.prepare('DELETE FROM apps WHERE slug=?').run(slug);
   db.prepare('DELETE FROM policies WHERE tool LIKE ?').run(`${slug}:%`);
+}
+
+/** Request headers for a remote app: the ones you entered, plus the sign-in token if it has one. */
+function appHeaders(r: any): Record<string, string> {
+  const headers = JSON.parse(r.headers) as Record<string, string>;
+  const token = r.oauth ? (JSON.parse(r.oauth).accessToken as string | undefined) : undefined;
+  return token ? { ...headers, Authorization: `Bearer ${token}` } : headers;
 }
 
 /** MCP server entries for every connected app, keyed as Claude Code will name them. */
@@ -87,7 +97,7 @@ export function appMcpServers(): Record<string, object> {
   for (const r of db.prepare('SELECT * FROM apps').all() as any[]) {
     const key = `${APP_PREFIX}${r.slug}`;
     if (r.transport === 'stdio') out[key] = { type: 'stdio', command: r.command, args: JSON.parse(r.args), env: JSON.parse(r.env) };
-    else out[key] = { type: r.transport, url: r.url, headers: JSON.parse(r.headers) };
+    else out[key] = { type: r.transport, url: r.url, headers: appHeaders(r) };
   }
   return out;
 }
@@ -102,7 +112,7 @@ const LIST = { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} };
 /** Read a JSON-RPC result from a JSON or SSE response body. */
 async function rpcResult(res: Response, id: number): Promise<any> {
   const text = await res.text();
-  if (!res.ok) throw new Error(`HTTP ${res.status}${res.status === 401 ? ' (needs a token, or uses a sign-in this setup can’t do)' : ''}: ${text.slice(0, 200)}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}${res.status === 401 ? ' (needs a token or a sign-in)' : ''}: ${text.slice(0, 200)}`);
   const msgs = (res.headers.get('content-type') ?? '').includes('text/event-stream')
     ? text.split('\n').filter((l) => l.startsWith('data:')).map((l) => JSON.parse(l.slice(5)))
     : [JSON.parse(text)].flat();
@@ -113,7 +123,7 @@ async function rpcResult(res: Response, id: number): Promise<any> {
 }
 
 async function testHttp(r: any): Promise<AppTest> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...JSON.parse(r.headers) };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...appHeaders(r) };
   const signal = AbortSignal.timeout(15_000);
   const init = await fetch(r.url, { method: 'POST', headers, body: JSON.stringify(INIT), signal });
   const session = init.headers.get('mcp-session-id');

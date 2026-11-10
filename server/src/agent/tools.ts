@@ -5,10 +5,11 @@ import { appendRow, getBotRow, listRoutines, toRoutine, describeCron } from '../
 import { scheduleRoutine, unscheduleRoutine } from '../routines.js';
 import { setCheckins } from '../proactive.js';
 import { appBySlug, listApps, slugify } from '../apps.js';
-import { openBrowser, screenOf, screenshot, SCREEN_H, SCREEN_W, xdo } from '../computer.js';
+import type { Page } from 'playwright-core';
+import { activateTab, pageFor, screenshot, SCREEN_H, SCREEN_W, toUrl } from '../computer.js';
 import { createSubagent, deleteSubagent, listSubagents } from './subagents.js';
 import { createRoom, postToRoom } from './rooms.js';
-import type { ActivityKind } from '../types.js';
+import { BOT_EFFORTS, BOT_MODELS, type ActivityKind } from '../types.js';
 import { Cron } from 'croner';
 
 export interface ToolCtx {
@@ -42,22 +43,57 @@ interface ToolDef {
 
 const obj = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
 
-async function shot(ctx: ToolCtx, caption: string): Promise<ToolResult> {
-  await new Promise((r) => setTimeout(r, 700));
-  const img = await screenshot(ctx.botId);
-  const display = screenOf(ctx.botId)?.display;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Longest page snapshot handed to the model; long pages are cut with a note. */
+const SNAPSHOT_CHARS = 24_000;
+
+/** Let a click or key settle: wait briefly for any navigation it started, then for the page to load. */
+async function settle(page: Page) {
+  await sleep(300);
+  await page.waitForLoadState('domcontentloaded', { timeout: 8_000 }).catch(() => {});
+}
+
+/** Text snapshot of the active tab: URL, title and the accessibility tree with element refs. */
+async function snapshot(ctx: ToolCtx, caption: string): Promise<ToolResult> {
+  const page = await pageFor(ctx.botId);
+  // Keep a screenshot for the step's thumbnail in the transcript.
+  await screenshot(ctx.botId).catch(() => null);
+  let tree = await page.ariaSnapshot({ mode: 'ai', timeout: 10_000 }).catch((e) => `(Couldn't read the page: ${e.message}. Take a screenshot instead.)`);
+  if (tree.length > SNAPSHOT_CHARS) tree = `${tree.slice(0, SNAPSHOT_CHARS)}\n… (page cut off; use browser_scroll and take another snapshot to see the rest)`;
+  const tabs = page.context().pages().length;
   return {
-    output: `${caption} Screen is ${SCREEN_W}x${SCREEN_H}px${display ? ` (DISPLAY=:${display})` : ''}.`,
+    output: `${caption}\nPage: ${await page.title().catch(() => '')}\nURL: ${page.url()}${tabs > 1 ? `\nTabs open: ${tabs}` : ''}\n\n${tree}`,
+    summary: caption,
+  };
+}
+
+async function shot(ctx: ToolCtx, caption: string): Promise<ToolResult> {
+  const img = await screenshot(ctx.botId);
+  const page = await pageFor(ctx.botId);
+  return {
+    output: `${caption} Page: ${page.url()}. The view is ${SCREEN_W}x${SCREEN_H}px; use x/y in that space.`,
     image: { data: img.toString('base64'), mimeType: 'image/jpeg' },
     summary: caption,
   };
 }
 
+/** The element a ref points at, from the latest browser_snapshot. */
+async function byRef(ctx: ToolCtx, ref: unknown) {
+  const r = String(ref ?? '').replace(/^\[?ref=/, '').replace(/\]$/, '').trim();
+  if (!r) throw new Error('Give the ref of an element from browser_snapshot, e.g. "e12".');
+  const el = (await pageFor(ctx.botId)).getByRef(r);
+  if (!(await el.count().catch(() => 0))) throw new Error(`There's no element ${r} on the page now. Take a new browser_snapshot and use a ref from it.`);
+  return el;
+}
+
 const int = (v: unknown, name: string) => {
   const n = Math.round(Number(v));
   if (!Number.isFinite(n)) throw new Error(`${name} must be a number`);
-  return String(n);
+  return n;
 };
+
+const BROWSER = 'browsing_web' as const;
 
 function botByName(userId: string, name: string) {
   return db.prepare('SELECT * FROM bots WHERE user_id=? AND COALESCE(hidden,0)=0 AND lower(name)=lower(?)').get(userId, name.trim()) as any;
@@ -65,84 +101,170 @@ function botByName(userId: string, name: string) {
 
 export const TOOLS: ToolDef[] = [
   {
-    name: 'computer_screenshot',
-    description: "Take a screenshot of your own computer screen (a Linux desktop on this VM that only you use; it starts if it's asleep). Use this before acting on the screen. The reply includes your DISPLAY number for launching GUI apps from Bash.",
-    parameters: obj({}),
-    activity: 'on_its_computer',
-    label: 'Looking at the screen',
-    impl: async (_a, ctx) => shot(ctx, 'Current screen.'),
-  },
-  {
-    name: 'computer_click',
-    description: 'Click at pixel coordinates on your screen. Returns a fresh screenshot.',
-    parameters: obj({ x: { type: 'integer' }, y: { type: 'integer' }, button: { type: 'string', enum: ['left', 'right', 'middle'] }, double: { type: 'boolean' } }, ['x', 'y']),
-    activity: 'on_its_computer',
-    label: 'Clicking on screen',
+    name: 'browser_open',
+    description: 'Open a URL (or search for words) in your browser, a Chromium only you use, with logins that persist between uses. The user can watch it live. Returns a snapshot of the page with element refs.',
+    parameters: obj({ url: { type: 'string', description: 'A URL, a domain like "github.com", or words to search for.' }, new_tab: { type: 'boolean' } }, ['url']),
+    activity: BROWSER,
+    label: 'Browsing a site',
     impl: async (a, ctx) => {
-      const button = { left: '1', middle: '2', right: '3' }[a.button as string] ?? '1';
-      await xdo(ctx.botId, ['mousemove', int(a.x, 'x'), int(a.y, 'y'), 'click', ...(a.double ? ['--repeat', '2'] : []), button]);
-      return shot(ctx, `Clicked (${a.x}, ${a.y}).`);
+      const url = toUrl(String(a.url ?? ''));
+      if (!url) return { output: 'Give a URL or something to search for.' };
+      let page = await pageFor(ctx.botId);
+      if (a.new_tab) { page = await page.context().newPage(); activateTab(ctx.botId, page); }
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await page.waitForLoadState('load', { timeout: 5_000 }).catch(() => {});
+      return snapshot(ctx, `Opened ${url}.`);
     },
   },
   {
-    name: 'computer_type',
-    description: 'Type text into the focused element on your screen. Returns a fresh screenshot.',
-    parameters: obj({ text: { type: 'string' } }, ['text']),
-    activity: 'on_its_computer',
+    name: 'browser_snapshot',
+    description: 'Read the page in your browser as an accessibility tree. Each element you can act on has a ref like [ref=e12]; pass it to browser_click, browser_type or browser_select. Take a new snapshot after the page changes, since old refs stop working.',
+    parameters: obj({}),
+    activity: BROWSER,
+    label: 'Reading the page',
+    impl: async (_a, ctx) => snapshot(ctx, 'Current page.'),
+  },
+  {
+    name: 'browser_screenshot',
+    description: 'See your browser as an image. Use it when the snapshot is not enough: visual layouts, images, canvas, maps or checking how something looks.',
+    parameters: obj({}),
+    activity: BROWSER,
+    label: 'Looking at the page',
+    impl: async (_a, ctx) => shot(ctx, 'Current view.'),
+  },
+  {
+    name: 'browser_click',
+    description: 'Click an element by its ref from browser_snapshot (preferred), or at x/y pixel coordinates from browser_screenshot. Returns a fresh snapshot.',
+    parameters: obj({ ref: { type: 'string' }, x: { type: 'integer' }, y: { type: 'integer' }, button: { type: 'string', enum: ['left', 'right', 'middle'] }, double: { type: 'boolean' } }),
+    activity: BROWSER,
+    label: 'Clicking',
+    impl: async (a, ctx) => {
+      const opts = { button: (a.button ?? 'left') as 'left' | 'right' | 'middle', clickCount: a.double ? 2 : 1 };
+      const page = await pageFor(ctx.botId);
+      if (a.ref !== undefined) await (await byRef(ctx, a.ref)).click({ ...opts, timeout: 10_000 });
+      else if (a.x !== undefined && a.y !== undefined) await page.mouse.click(int(a.x, 'x'), int(a.y, 'y'), opts);
+      else return { output: 'Give a ref from browser_snapshot, or x and y.' };
+      await settle(page);
+      return snapshot(ctx, a.ref !== undefined ? `Clicked ${a.ref}.` : `Clicked (${a.x}, ${a.y}).`);
+    },
+  },
+  {
+    name: 'browser_type',
+    description: 'Type into a text field. With a ref, replaces what the field holds; without one, types at the cursor. Set submit to press Enter afterwards. Returns a fresh snapshot.',
+    parameters: obj({ ref: { type: 'string' }, text: { type: 'string' }, submit: { type: 'boolean' } }, ['text']),
+    activity: BROWSER,
     label: 'Typing',
     impl: async (a, ctx) => {
-      const text = String(a.text);
-      for (let i = 0; i < text.length; i += 500) await xdo(ctx.botId, ['type', '--delay', '8', '--', text.slice(i, i + 500)]);
-      return shot(ctx, `Typed ${text.length} characters.`);
+      const text = String(a.text ?? '');
+      const page = await pageFor(ctx.botId);
+      if (a.ref !== undefined) {
+        const el = await byRef(ctx, a.ref);
+        await el.fill(text, { timeout: 10_000 });
+        if (a.submit) await el.press('Enter');
+      } else {
+        await page.keyboard.insertText(text);
+        if (a.submit) await page.keyboard.press('Enter');
+      }
+      await settle(page);
+      return snapshot(ctx, `Typed ${text.length} characters${a.submit ? ' and pressed Enter' : ''}.`);
     },
   },
   {
-    name: 'computer_key',
-    description: 'Press a key or key combination using X11 keysym names joined by "+", e.g. "Return", "ctrl+l", "ctrl+shift+t", "BackSpace", "Escape", "Page_Down".',
+    name: 'browser_select',
+    description: 'Choose options in a dropdown (<select>) by its ref. Returns a fresh snapshot.',
+    parameters: obj({ ref: { type: 'string' }, values: { type: 'array', items: { type: 'string' }, description: 'Option labels or values.' } }, ['ref', 'values']),
+    activity: BROWSER,
+    label: 'Choosing an option',
+    impl: async (a, ctx) => {
+      const values: string[] = (Array.isArray(a.values) ? a.values : [a.values]).map(String);
+      await (await byRef(ctx, a.ref)).selectOption(values.map((label) => ({ label })), { timeout: 5_000 })
+        .catch(async () => (await byRef(ctx, a.ref)).selectOption(values, { timeout: 5_000 }));
+      return snapshot(ctx, `Chose ${values.join(', ')}.`);
+    },
+  },
+  {
+    name: 'browser_press',
+    description: 'Press a key or shortcut in your browser, e.g. "Enter", "Escape", "Tab", "ArrowDown", "PageDown", "Control+a", "Shift+Tab". Returns a fresh snapshot.',
     parameters: obj({ keys: { type: 'string' } }, ['keys']),
-    activity: 'on_its_computer',
+    activity: BROWSER,
     label: 'Pressing keys',
     impl: async (a, ctx) => {
-      const keys = String(a.keys).split('+').map((k) => (k.length === 1 ? k.toLowerCase() : k)).join('+');
-      await xdo(ctx.botId, ['key', '--', keys]);
-      return shot(ctx, `Pressed ${keys}.`);
+      const page = await pageFor(ctx.botId);
+      const keys = String(a.keys).split('+').map((k) => ({ ctrl: 'Control', cmd: 'Meta', alt: 'Alt', shift: 'Shift', return: 'Enter', esc: 'Escape' }[k.toLowerCase()] ?? k)).join('+');
+      await page.keyboard.press(keys);
+      await settle(page);
+      return snapshot(ctx, `Pressed ${keys}.`);
     },
   },
   {
-    name: 'computer_scroll',
-    description: 'Scroll the mouse wheel at a position on your screen.',
-    parameters: obj({ x: { type: 'integer' }, y: { type: 'integer' }, direction: { type: 'string', enum: ['up', 'down'] }, amount: { type: 'integer' } }, ['x', 'y', 'direction']),
-    activity: 'on_its_computer',
+    name: 'browser_scroll',
+    description: 'Scroll the page, or bring an element (by ref) into view. Returns a fresh snapshot.',
+    parameters: obj({ direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] }, amount: { type: 'integer', description: 'Screens to scroll, default 1.' }, ref: { type: 'string' } }),
+    activity: BROWSER,
     label: 'Scrolling',
     impl: async (a, ctx) => {
-      const n = Math.min(Math.max(Number(a.amount ?? 3) || 3, 1), 30);
-      await xdo(ctx.botId, ['mousemove', int(a.x, 'x'), int(a.y, 'y'), 'click', '--repeat', String(n), '--delay', '40', a.direction === 'up' ? '4' : '5']);
-      return shot(ctx, `Scrolled ${a.direction}.`);
+      const page = await pageFor(ctx.botId);
+      if (a.ref !== undefined) {
+        await (await byRef(ctx, a.ref)).scrollIntoViewIfNeeded({ timeout: 5_000 });
+        return snapshot(ctx, `Scrolled to ${a.ref}.`);
+      }
+      const n = Math.min(Math.max(Number(a.amount ?? 1) || 1, 1), 20);
+      const dir = String(a.direction ?? 'down');
+      await page.mouse.move(SCREEN_W / 2, SCREEN_H / 2);
+      await page.mouse.wheel(dir === 'left' ? -SCREEN_W * 0.8 * n : dir === 'right' ? SCREEN_W * 0.8 * n : 0, dir === 'up' ? -SCREEN_H * 0.8 * n : dir === 'down' ? SCREEN_H * 0.8 * n : 0);
+      await sleep(400);
+      return snapshot(ctx, `Scrolled ${dir}.`);
     },
   },
   {
-    name: 'computer_drag',
-    description: 'Drag with the left mouse button from one point to another on your screen.',
+    name: 'browser_drag',
+    description: 'Drag with the mouse from one point to another (pixel coordinates from browser_screenshot), e.g. for sliders or maps.',
     parameters: obj({ start_x: { type: 'integer' }, start_y: { type: 'integer' }, end_x: { type: 'integer' }, end_y: { type: 'integer' } }, ['start_x', 'start_y', 'end_x', 'end_y']),
-    activity: 'on_its_computer',
+    activity: BROWSER,
     label: 'Dragging',
     impl: async (a, ctx) => {
-      await xdo(ctx.botId, ['mousemove', int(a.start_x, 'start_x'), int(a.start_y, 'start_y'), 'mousedown', '1', 'sleep', '0.15', 'mousemove', int(a.end_x, 'end_x'), int(a.end_y, 'end_y'), 'sleep', '0.15', 'mouseup', '1']);
+      const page = await pageFor(ctx.botId);
+      await page.mouse.move(int(a.start_x, 'start_x'), int(a.start_y, 'start_y'));
+      await page.mouse.down();
+      await page.mouse.move(int(a.end_x, 'end_x'), int(a.end_y, 'end_y'), { steps: 12 });
+      await page.mouse.up();
       return shot(ctx, 'Dragged.');
     },
   },
   {
-    name: 'open_browser',
-    description: 'Open a URL in a Chromium window on your screen (your own browser profile, so logins persist between uses). Returns a screenshot.',
-    parameters: obj({ url: { type: 'string' } }, ['url']),
-    activity: 'browsing_web',
+    name: 'browser_navigate',
+    description: 'Go back, go forward or reload the page. Returns a fresh snapshot.',
+    parameters: obj({ action: { type: 'string', enum: ['back', 'forward', 'reload'] } }, ['action']),
+    activity: BROWSER,
     label: 'Browsing a site',
     impl: async (a, ctx) => {
-      const url = String(a.url);
-      if (!/^(https?|file):\/\//i.test(url) && !/^about:/i.test(url)) return { output: 'Use a full URL starting with http:// or https://.' };
-      await openBrowser(ctx.botId, url);
-      await new Promise((r) => setTimeout(r, 2500));
-      return shot(ctx, `Opened ${url}.`);
+      const page = await pageFor(ctx.botId);
+      const opts = { waitUntil: 'domcontentloaded' as const, timeout: 20_000 };
+      if (a.action === 'back') await page.goBack(opts);
+      else if (a.action === 'forward') await page.goForward(opts);
+      else await page.reload(opts);
+      return snapshot(ctx, a.action === 'reload' ? 'Reloaded.' : `Went ${a.action}.`);
+    },
+  },
+  {
+    name: 'browser_tabs',
+    description: 'List your open tabs, switch to one, or close one. Links that open a new tab switch to it on their own.',
+    parameters: obj({ action: { type: 'string', enum: ['list', 'switch', 'close'] }, index: { type: 'integer', description: 'Tab number from the list (starting at 1).' } }, ['action']),
+    activity: BROWSER,
+    label: 'Switching tabs',
+    impl: async (a, ctx) => {
+      const current = await pageFor(ctx.botId);
+      const pages = current.context().pages();
+      const list = async () => (await Promise.all(pages.map(async (p, i) => `${i + 1}. ${p === current ? '(current) ' : ''}${await p.title().catch(() => '')} — ${p.url()}`))).join('\n');
+      if (a.action === 'list') return { output: await list(), summary: `${pages.length} tabs` };
+      const target = pages[int(a.index, 'index') - 1];
+      if (!target) return { output: `There's no tab ${a.index}. Open tabs:\n${await list()}` };
+      if (a.action === 'close') {
+        await target.close();
+        return snapshot(ctx, `Closed tab ${a.index}.`);
+      }
+      activateTab(ctx.botId, target);
+      return snapshot(ctx, `Switched to tab ${a.index}.`);
     },
   },
   {
@@ -294,16 +416,24 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'spawn_subagent',
-    description: 'Start a subagent: a helper copy of you with its own context, working in your folder, to work on one goal in parallel (e.g. research one company each). It reports back to you as a message when done. Max 4 at a time.',
-    parameters: obj({ goal: { type: 'string', description: 'Self-contained task with everything the subagent needs to know' }, label: { type: 'string', description: 'Short name, e.g. "Acme research"' } }, ['goal']),
+    description: 'Start a subagent: a helper copy of you with its own context, working in your folder, to work on one goal in parallel (e.g. research one company each). It reports back to you as a message when done. Max 4 at a time. Optionally pick its model and thinking level (e.g. a cheaper model or lower effort for simple lookups); by default it uses yours.',
+    parameters: obj({
+      goal: { type: 'string', description: 'Self-contained task with everything the subagent needs to know' },
+      label: { type: 'string', description: 'Short name, e.g. "Acme research"' },
+      model: { type: 'string', enum: [...BOT_MODELS], description: 'Model for the subagent, e.g. "claude-sonnet-5-5" or "claude-opus-5-5". Omit to use your own model.' },
+      effort: { type: 'string', enum: [...BOT_EFFORTS], description: 'Thinking level for the subagent: low, medium, high, xhigh or max. Omit to use your own.' },
+    }, ['goal']),
     activity: 'messaging_named',
     label: 'Starting a helper',
     impl: async (a, ctx) => {
       if (ctx.depth >= 2) return { output: 'Subagents cannot start more subagents. Do the work yourself.' };
       try {
-        const sub = createSubagent(ctx.botId, String(a.goal), a.label);
+        const sub = createSubagent(ctx.botId, String(a.goal), a.label, {
+          model: a.model == null ? undefined : String(a.model),
+          effort: a.effort == null ? undefined : String(a.effort),
+        });
         ctx.enqueueBotMessage(ctx.botId, sub.id, String(a.goal), ctx.depth + 1);
-        return { output: JSON.stringify({ ok: true, subagent_id: sub.id, name: sub.name, note: 'It will report back to you as a message. Continue with other work or end your turn.' }), summary: `Started ${sub.name}` };
+        return { output: JSON.stringify({ ok: true, subagent_id: sub.id, name: sub.name, model: sub.model, effort: sub.effort, note: 'It will report back to you as a message. Continue with other work or end your turn.' }), summary: `Started ${sub.name}` };
       } catch (e: any) {
         return { output: String(e?.message ?? e) };
       }
@@ -311,7 +441,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'list_subagents',
-    description: 'List your subagents with their status and latest message.',
+    description: 'List your subagents with their model, thinking level, status and latest message.',
     parameters: obj({}),
     activity: 'working',
     label: 'Checking on helpers',

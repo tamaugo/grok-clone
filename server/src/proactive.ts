@@ -6,19 +6,21 @@ import { db, now } from './db.js';
  * primary bot gets a [check-in] turn and either sends ONE concise message or stays silent.
  */
 
+db.exec(`CREATE TABLE IF NOT EXISTS proactivity (
+  user_id TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  times TEXT NOT NULL DEFAULT '["09:00","16:30"]',
+  timezone TEXT NOT NULL DEFAULT 'UTC',
+  last_fired TEXT,
+  silent_streak INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+)`);
+
 let enqueueFn: ((botId: string, t: any) => void) | null = null;
 
-export function initProactive(enqueue: (botId: string, t: any) => void) {
-  db.exec(`CREATE TABLE IF NOT EXISTS proactivity (
-    user_id TEXT PRIMARY KEY,
-    enabled INTEGER NOT NULL DEFAULT 0,
-    times TEXT NOT NULL DEFAULT '["09:00","16:30"]',
-    timezone TEXT NOT NULL DEFAULT 'UTC',
-    last_fired TEXT,
-    silent_streak INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL
-  )`);
+export function initProactive(enqueue: (botId: string, t: any) => void, schedule = true) {
   enqueueFn = enqueue;
+  if (!schedule) return;
   setInterval(tick, 60_000).unref();
   console.log(`[proactive] ${(db.prepare('SELECT COUNT(*) n FROM proactivity WHERE enabled=1').get() as any).n} user(s) with check-ins`);
 }
@@ -85,7 +87,7 @@ export function fireCheckin(userId: string, silentStreak = 0, force = false) {
   const needsInput = db.prepare("SELECT b.name, t.title FROM tasks t JOIN bots b ON b.id=t.bot_id WHERE b.user_id=? AND t.state='needs_input' LIMIT 10").all(userId) as any[];
   const since = now() - 12 * 3600_000;
   const routineRuns = db.prepare("SELECT b.name bot, r.name FROM routines r JOIN bots b ON b.id=r.bot_id WHERE b.user_id=? AND r.last_run_at > ?").all(userId, since) as any[];
-  const otherBots = db.prepare("SELECT name, label FROM bots WHERE user_id=? AND is_primary=0").all(userId) as any[];
+  const otherBots = db.prepare("SELECT name, label FROM bots WHERE user_id=? AND is_primary=0 AND COALESCE(hidden,0)=0 AND COALESCE(kind,'agent')<>'room'").all(userId) as any[];
 
   const context = [
     needsInput.length ? `Tasks waiting on the user: ${needsInput.map((t) => `${t.title} (${t.name})`).join('; ')}` : 'No tasks waiting on the user.',

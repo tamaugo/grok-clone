@@ -9,7 +9,7 @@ import { Menu } from '../Menu';
 import { ToolkitLogo } from '../ToolkitLogo';
 import { Modal } from './Modal';
 
-/** Design pill → catalog category. */
+/** Design pill \u2192 catalog category. */
 const PILLS: { label: string; category: string }[] = [
   { label: 'Productivity', category: 'productivity' },
   { label: 'Communication', category: 'communication' },
@@ -24,6 +24,10 @@ interface Toolkit { slug: string; name: string; logo?: string; description?: str
 const CUSTOM: Toolkit = { slug: '__custom', name: 'Custom app', description: 'Any MCP server: a URL with an optional token, or a command that runs on your VM.', categories: [], connected: false, noAuth: false };
 const titleCase = (s: string) => s.replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\bAi\b/g, 'AI').replace(/\bCrm\b/g, 'CRM').replace(/\bSeo\b/g, 'SEO').replace(/\bIt\b/g, 'IT').replace(/\bHr\b/g, 'HR').replace(/\bSms\b/g, 'SMS').replace(/\bUrl\b/g, 'URL').replace(/\bOcr\b/g, 'OCR');
 const pillLabel = (cat: string) => PILLS.find((p) => p.category === cat)?.label ?? titleCase(cat);
+const splitCommand = (s: string): [string, string[]] => {
+  const parts = (s.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []).map((p) => p.replace(/^["']|["']$/g, ''));
+  return [parts[0] ?? '', parts.slice(1)];
+};
 
 type View = { kind: 'all' } | { kind: 'category'; category: string } | { kind: 'connected' } | { kind: 'form'; app: Toolkit };
 
@@ -38,10 +42,10 @@ function AppRow({ app, onChanged, onForm }: { app: Toolkit; onChanged: () => voi
     setState('busy'); setError(null);
     try {
       const { test } = await api.addApp({ ...catalogInput(app.catalog, {}), ...appsContextIds() });
-      if (!test.ok) { await api.disconnect(app.slug).catch(() => {}); throw new Error(test.error || 'Couldn’t reach the app'); }
+      if (!test.ok) { await api.disconnect(app.slug).catch(() => {}); throw new Error(test.error || 'Couldn\u2019t reach the app'); }
       onChanged();
     } catch (e) {
-      setError((e as Error).message || 'Couldn’t start the connection');
+      setError((e as Error).message || 'Couldn\u2019t start the connection');
       setState('idle');
     }
   };
@@ -66,7 +70,7 @@ function AppRow({ app, onChanged, onForm }: { app: Toolkit; onChanged: () => voi
         <span className="app-row__connected is-static"><Icon name="check" size={12} opacity={0.56} />Built in</span>
       ) : (
         <button type="button" className="app-row__connect" onClick={connect} disabled={state === 'busy'}>
-          {state === 'busy' ? 'Opening…' : state === 'waiting' ? 'Waiting…' : 'Connect'}
+          {state === 'busy' ? 'Opening\u2026' : state === 'waiting' ? 'Waiting\u2026' : 'Connect'}
         </button>
       )}
     </div>
@@ -146,8 +150,8 @@ export function ConnectAppsModal() {
   const moreActive = activeCategory !== null && !PILLS.some((p) => p.category === activeCategory);
 
   let body: React.ReactNode;
-  if (error) body = <div className="apps-empty">Couldn’t load apps. {error}</div>;
-  else if (!data && loading) body = <div className="apps-empty">Loading apps…</div>;
+  if (error) body = <div className="apps-empty">Couldn\u2019t load apps. {error}</div>;
+  else if (!data && loading) body = <div className="apps-empty">Loading apps\u2026</div>;
   else if (view.kind === 'form') body = <ConnectForm app={view.app} onBack={() => setView({ kind: 'all' })} onDone={() => { refresh(); setView({ kind: 'connected' }); }} />;
   else if (view.kind === 'connected') body = connectedApps.length ? <Section title="Connected" apps={connectedApps} onChanged={refresh} onForm={onForm} /> : <div className="apps-empty">No apps connected yet.</div>;
   else if (searching || view.kind === 'category') {
@@ -155,7 +159,7 @@ export function ConnectAppsModal() {
       <Section title={searching ? `Results${activeCategory ? ` in ${pillLabel(activeCategory)}` : ''}` : pillLabel(activeCategory!)} apps={apps} onChanged={refresh} onForm={onForm} />
     ) : (
       <>
-        <div className="apps-empty">No apps match “{debounced}”.</div>
+        <div className="apps-empty">No apps match \u201c{debounced}\u201d.</div>
         <Section title="Add it yourself" apps={[CUSTOM]} onChanged={refresh} onForm={onForm} />
       </>
     );
@@ -234,8 +238,8 @@ function ConnectForm({ app, onBack, onDone }: { app: Toolkit; onBack: () => void
   const fields = custom
     ? [
         { key: 'name', label: 'Name', placeholder: 'e.g. Linear', secret: false },
-        { key: 'url', label: 'MCP server URL, or a command to run', placeholder: 'https://… or npx -y some-mcp-server', secret: false },
-        { key: 'token', label: 'Token (optional)', placeholder: 'Sent as “Authorization: Bearer …” for URLs', secret: true },
+        { key: 'url', label: 'MCP server URL, or a command to run', placeholder: 'https://\u2026 or npx -y some-mcp-server', secret: false },
+        { key: 'token', label: 'Token (optional)', placeholder: 'Sent as \u201cAuthorization: Bearer \u2026\u201d for URLs', secret: true },
       ]
     : (app.catalog!.fields ?? []).map((f) => ({ key: f.key, label: f.label, placeholder: f.placeholder ?? '', secret: true }));
   const ready = fields.every((f) => f.label.includes('optional') || (values[f.key] ?? '').trim());
@@ -247,15 +251,16 @@ function ConnectForm({ app, onBack, onDone }: { app: Toolkit; onBack: () => void
       if (custom) {
         const target = (values.url ?? '').trim();
         const token = (values.token ?? '').trim();
+        const [command, args] = splitCommand(target);
         input = /^https?:\/\//i.test(target)
           ? { name: values.name ?? '', transport: 'http' as const, url: target, headers: token ? { Authorization: `Bearer ${token}` } : {} }
-          : { name: values.name ?? '', transport: 'stdio' as const, command: target.split(/\s+/)[0], args: target.split(/\s+/).slice(1) };
+          : { name: values.name ?? '', transport: 'stdio' as const, command, args };
       } else input = catalogInput(app.catalog!, values);
       const { app: added, test } = await api.addApp({ ...input, ...appsContextIds() });
-      if (!test.ok) { await api.disconnect(added.slug).catch(() => {}); throw new Error(test.error || 'Couldn’t reach the app'); }
+      if (!test.ok) { await api.disconnect(added.slug).catch(() => {}); throw new Error(test.error || 'Couldn\u2019t reach the app'); }
       onDone();
     } catch (e) {
-      setError((e as Error).message || 'Couldn’t start the connection');
+      setError((e as Error).message || 'Couldn\u2019t start the connection');
     } finally {
       setBusy(false);
     }
@@ -288,7 +293,7 @@ function ConnectForm({ app, onBack, onDone }: { app: Toolkit; onBack: () => void
       {error && <div className="app-row__error app-connect__error">{error}</div>}
       <div className="app-connect__actions">
         <button type="button" className="btn btn--secondary" onClick={onBack} disabled={busy}>Cancel</button>
-        <button type="button" className="btn btn--primary" onClick={submit} disabled={busy || !ready}>{busy ? 'Connecting…' : 'Connect'}</button>
+        <button type="button" className="btn btn--primary" onClick={submit} disabled={busy || !ready}>{busy ? 'Connecting\u2026' : 'Connect'}</button>
       </div>
     </section>
   );

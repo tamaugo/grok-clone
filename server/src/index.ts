@@ -46,7 +46,7 @@ const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, (
 attachVncRelay(server as unknown as Server);
 startIdleScreens();
 // GROKBOT_NO_SCHEDULER=1 for extra dev/test servers sharing a database copy, so routines don't fire twice.
-if (process.env.GROKBOT_NO_SCHEDULER !== '1') {
-  initRoutines(enqueue);
-  initProactive(enqueue);
-} else console.log('[grokbot] scheduler disabled (GROKBOT_NO_SCHEDULER=1)');
+const runScheduler = process.env.GROKBOT_NO_SCHEDULER !== '1';
+initRoutines(enqueue, runScheduler);
+initProactive(enqueue, runScheduler);
+if (!runScheduler) console.log('[grokbot] scheduler disabled (GROKBOT_NO_SCHEDULER=1)');

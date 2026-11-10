@@ -60,10 +60,11 @@ function bumpRev(botId: string): number {
   return (db.prepare('SELECT rev FROM bots WHERE id=?').get(botId) as any).rev;
 }
 
-/** Append a new row. Returns its seq. */
-export function appendRow(botId: string, kind: RowKind, body: RowBody): Row {
+/** Append a new row. Returns its seq. When `generation` is given, drops writes if the conversation was cleared or the Bot was removed. */
+export function appendRow(botId: string, kind: RowKind, body: RowBody, generation?: number): Row {
   const tx = db.transaction(() => {
     const b = db.prepare('SELECT user_id, generation, next_seq FROM bots WHERE id=?').get(botId) as any;
+    if (!b || (generation !== undefined && b.generation !== generation)) return null;
     const seq = b.next_seq;
     db.prepare('UPDATE bots SET next_seq = next_seq + 1 WHERE id=?').run(botId);
     const rev = bumpRev(botId);
@@ -71,15 +72,17 @@ export function appendRow(botId: string, kind: RowKind, body: RowBody): Row {
     db.prepare('INSERT INTO rows(bot_id,generation,seq,updated_seq,kind,body,created_at) VALUES (?,?,?,?,?,?,?)').run(botId, b.generation, seq, rev, kind, JSON.stringify(body), t);
     return { userId: b.user_id as string, row: { botId, generation: b.generation, seq, updatedSeq: rev, kind, body, createdAt: t } as Row };
   });
-  const { userId, row } = tx();
-  hub.emit(userId, { type: 'rows', botId, generation: row.generation, rows: [row] });
-  return row;
+  const res = tx();
+  if (!res) return { botId, generation: generation ?? 0, seq: 0, updatedSeq: 0, kind, body, createdAt: now() };
+  hub.emit(res.userId, { type: 'rows', botId, generation: res.row.generation, rows: [res.row] });
+  return res.row;
 }
 
 /** Rewrite an existing row's body (e.g. streaming text, card status). */
-export function updateRow(botId: string, seq: number, body: RowBody): Row | null {
+export function updateRow(botId: string, seq: number, body: RowBody, generation?: number): Row | null {
   const tx = db.transaction(() => {
     const b = db.prepare('SELECT user_id, generation FROM bots WHERE id=?').get(botId) as any;
+    if (!b || (generation !== undefined && b.generation !== generation)) return null;
     const existing = db.prepare('SELECT * FROM rows WHERE bot_id=? AND generation=? AND seq=?').get(botId, b.generation, seq) as any;
     if (!existing) return null;
     const rev = bumpRev(botId);
@@ -92,8 +95,9 @@ export function updateRow(botId: string, seq: number, body: RowBody): Row | null
   return res.row;
 }
 
-export function getRow(botId: string, seq: number): Row | null {
+export function getRow(botId: string, seq: number, generation?: number): Row | null {
   const b = getBotRow(botId);
+  if (!b || (generation !== undefined && b.generation !== generation)) return null;
   const r = db.prepare('SELECT * FROM rows WHERE bot_id=? AND generation=? AND seq=?').get(botId, b.generation, seq);
   return r ? toRow(r) : null;
 }
@@ -113,6 +117,7 @@ export function listRows(botId: string, opts: { beforeSeq?: number; limit?: numb
 
 export function clearConversation(botId: string) {
   const b = getBotRow(botId);
+  if (!b) return;
   // A fresh conversation also starts a fresh Claude Code session.
   db.prepare('UPDATE bots SET generation = generation + 1, next_seq = 1, claude_session = NULL WHERE id=?').run(botId);
   hub.emit(b.user_id, { type: 'cleared', botId, generation: b.generation + 1 });

@@ -1,6 +1,8 @@
 import { db, now } from '../db.js';
 import { newId } from '../lib/ids.js';
 import { getLive } from '../store.js';
+import { stopScreen } from '../computer.js';
+import { expirePending } from './approvals.js';
 
 /**
  * Subagents (Grok Bot: CheckSubagent / MessageSubagent / StopSubagent, `sand-subagent-*`).
@@ -21,7 +23,7 @@ export function createSubagent(parentId: string, goal: string, label?: string) {
   const active = (db.prepare('SELECT COUNT(*) n FROM bots WHERE parent_bot_id=? AND hidden=1').get(parentId) as any).n;
   if (active >= 4) throw new Error('This Bot already has 4 subagents; stop one first.');
   const id = newId('sub');
-  const name = `${p.name} · ${(label || goal).replace(/\s+/g, ' ').slice(0, 32)}`;
+  const name = `${p.name} \u00b7 ${(label || goal).replace(/\s+/g, ' ').slice(0, 32)}`;
   const instructions =
     `You are a subagent of ${p.name}, working on one delegated goal:\n${goal}\n\n` +
     `Work independently with your own tools in your parent's working folder. When you finish (or get blocked), call send_to_bot with bot_name "${p.name}" and a concise result, then stop. Do not message the user directly.` +
@@ -51,6 +53,8 @@ export function listSubagents(parentId: string) {
 export function deleteSubagent(parentId: string, subId: string) {
   const s = db.prepare('SELECT user_id FROM bots WHERE id=? AND parent_bot_id=?').get(subId, parentId) as any;
   if (!s) return false;
+  expirePending(subId);
+  stopScreen(subId, 'subagent stopped');
   db.prepare('DELETE FROM bots WHERE id=?').run(subId);
   return true;
 }

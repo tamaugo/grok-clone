@@ -9,7 +9,7 @@ import type { Page } from 'playwright-core';
 import { activateTab, pageFor, screenshot, SCREEN_H, SCREEN_W, toUrl } from '../computer.js';
 import { createSubagent, deleteSubagent, listSubagents } from './subagents.js';
 import { createRoom, postToRoom } from './rooms.js';
-import type { ActivityKind } from '../types.js';
+import { BOT_EFFORTS, BOT_MODELS, type ActivityKind } from '../types.js';
 import { Cron } from 'croner';
 
 export interface ToolCtx {
@@ -416,16 +416,24 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'spawn_subagent',
-    description: 'Start a subagent: a helper copy of you with its own context, working in your folder, to work on one goal in parallel (e.g. research one company each). It reports back to you as a message when done. Max 4 at a time.',
-    parameters: obj({ goal: { type: 'string', description: 'Self-contained task with everything the subagent needs to know' }, label: { type: 'string', description: 'Short name, e.g. "Acme research"' } }, ['goal']),
+    description: 'Start a subagent: a helper copy of you with its own context, working in your folder, to work on one goal in parallel (e.g. research one company each). It reports back to you as a message when done. Max 4 at a time. Optionally pick its model and thinking level (e.g. a cheaper model or lower effort for simple lookups); by default it uses yours.',
+    parameters: obj({
+      goal: { type: 'string', description: 'Self-contained task with everything the subagent needs to know' },
+      label: { type: 'string', description: 'Short name, e.g. "Acme research"' },
+      model: { type: 'string', enum: [...BOT_MODELS], description: 'Model for the subagent, e.g. "claude-sonnet-5-5" or "claude-opus-5-5". Omit to use your own model.' },
+      effort: { type: 'string', enum: [...BOT_EFFORTS], description: 'Thinking level for the subagent: low, medium, high, xhigh or max. Omit to use your own.' },
+    }, ['goal']),
     activity: 'messaging_named',
     label: 'Starting a helper',
     impl: async (a, ctx) => {
       if (ctx.depth >= 2) return { output: 'Subagents cannot start more subagents. Do the work yourself.' };
       try {
-        const sub = createSubagent(ctx.botId, String(a.goal), a.label);
+        const sub = createSubagent(ctx.botId, String(a.goal), a.label, {
+          model: a.model == null ? undefined : String(a.model),
+          effort: a.effort == null ? undefined : String(a.effort),
+        });
         ctx.enqueueBotMessage(ctx.botId, sub.id, String(a.goal), ctx.depth + 1);
-        return { output: JSON.stringify({ ok: true, subagent_id: sub.id, name: sub.name, note: 'It will report back to you as a message. Continue with other work or end your turn.' }), summary: `Started ${sub.name}` };
+        return { output: JSON.stringify({ ok: true, subagent_id: sub.id, name: sub.name, model: sub.model, effort: sub.effort, note: 'It will report back to you as a message. Continue with other work or end your turn.' }), summary: `Started ${sub.name}` };
       } catch (e: any) {
         return { output: String(e?.message ?? e) };
       }
@@ -433,7 +441,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'list_subagents',
-    description: 'List your subagents with their status and latest message.',
+    description: 'List your subagents with their model, thinking level, status and latest message.',
     parameters: obj({}),
     activity: 'working',
     label: 'Checking on helpers',

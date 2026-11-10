@@ -5,7 +5,7 @@ A self-hosted Grok Bot clone. Bots run on the Claude Code CLI using a Claude sub
 ## Done
 
 - **Claude Code backend.** Each Bot turn runs headless with `claude -p --output-format stream-json` and resumes the Bot's own session. If a saved session is gone, the turn starts a new one.
-- **Model per Bot.** You pick Default, Fable, Opus, Sonnet or Haiku when creating a Bot, and can change it in the Bot's settings. Default uses `CLAUDE_MODEL`, or your account's default. Subagents use their parent's model.
+- **Model per Bot.** You pick Default, Fable, Opus, Sonnet or Haiku when creating a Bot, and can change it in the Bot's settings. Default uses `CLAUDE_MODEL`, or your account's default. Subagents use their parent's model and thinking level unless `spawn_subagent` is given `model` and/or `effort` (validated against `BOT_MODELS` / `BOT_EFFORTS`); `list_subagents` shows each one's model and effort.
 - **Thinking level per Bot.** Low, Medium, High, Extra high or Max, passed to the CLI as `--effort`. You set it when creating a Bot and in its settings. The old "Max" label (`xhigh`) is now "Extra high", and a real Max level was added.
 - **RAM safeguards.**
   - At most 2 Claude processes run at once.

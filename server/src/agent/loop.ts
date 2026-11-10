@@ -169,6 +169,19 @@ class TranscriptWriter {
   private currentMsgId = '';
   /** tool_use id -> transcript row seq */
   private tools = new Map<string, number>();
+  /**
+   * Bubble merging. Text before the first tool call is the acknowledgement and keeps its own bubble.
+   * Everything written after that is ONE reply bubble: each new text segment is appended to it
+   * (joined by a blank line), and the bubble moves below any tool rows/cards added since, so it
+   * always sits at the end of the turn's activity.
+   */
+  private sawTool = false;
+  /** The merged reply row (null until the first post-tool text). */
+  private replySeq: number | null = null;
+  /** Text of finished segments already in the reply bubble. */
+  private replyText = '';
+  /** Whether the reply bubble already counted towards unread. */
+  private replyCounted = false;
 
   constructor(private botId: string, private generation: number, private ctx: ToolCtx) {}
 
@@ -190,6 +203,7 @@ class TranscriptWriter {
     if (e.type === 'message_start') this.currentMsgId = e.message?.id ?? '';
     else if (e.type === 'content_block_start') {
       if (e.content_block?.type === 'text') { this.inText = true; this.text = ''; this.msgSeq = null; this.streamed.add(this.currentMsgId); }
+      else if (e.content_block?.type === 'tool_use') this.sawTool = true;
       else if (e.content_block?.type === 'thinking') setLive(this.botId, { activity: { kind: 'thinking', since: now() } });
     } else if (e.type === 'content_block_delta' && e.delta?.type === 'text_delta' && this.inText) {
       this.text += e.delta.text;
@@ -200,9 +214,30 @@ class TranscriptWriter {
     }
   }
 
+  /** Text of the bubble being written: the reply so far plus the current segment. */
+  private bubbleText() {
+    if (!this.sawTool || !this.replyText) return this.text;
+    return `${this.replyText}\n\n${this.text.replace(/^\s+/, '')}`;
+  }
+
+  /** Remove a message row: clients get a blank (hidden) update, then it leaves the DB. */
+  private dropMessageRow(seq: number) {
+    updateRow(this.botId, seq, { type: 'message', role: 'assistant', text: '', streaming: false }, this.generation);
+    db.prepare('DELETE FROM rows WHERE bot_id=? AND generation=? AND seq=?').run(this.botId, this.generation, seq);
+    this.msgSeqs = this.msgSeqs.filter((s) => s !== seq);
+  }
+
   private flush(streaming: boolean) {
     if (this.ctx.turn.suppressReply || !this.text.trim()) return;
-    const b: MessageBody = { type: 'message', role: 'assistant', text: this.text, streaming };
+    const b: MessageBody = { type: 'message', role: 'assistant', text: this.bubbleText(), streaming };
+    if (this.msgSeq === null && this.sawTool && this.replySeq !== null) {
+      // A new segment of the reply: grow the existing bubble in place if it is still the last row,
+      // otherwise move it to the end (below the tool calls / cards added since).
+      const next = (db.prepare('SELECT next_seq FROM bots WHERE id=? AND generation=?').get(this.botId, this.generation) as any)?.next_seq;
+      if (next === this.replySeq + 1) this.msgSeq = this.replySeq;
+      else this.dropMessageRow(this.replySeq);
+      this.replySeq = null;
+    }
     if (this.msgSeq === null) {
       const row = appendRow(this.botId, 'message', b, this.generation);
       if (!row.seq) return;
@@ -216,8 +251,16 @@ class TranscriptWriter {
   private finalizeText() {
     this.flush(false);
     if (this.msgSeq !== null) {
-      const r = db.prepare('UPDATE bots SET unread = unread + 1 WHERE id=? AND generation=?').run(this.botId, this.generation);
-      if (r.changes) this.unreadAdded++;
+      const isReply = this.sawTool;
+      if (!isReply || !this.replyCounted) {
+        const r = db.prepare('UPDATE bots SET unread = unread + 1 WHERE id=? AND generation=?').run(this.botId, this.generation);
+        if (r.changes) this.unreadAdded++;
+        if (isReply) this.replyCounted = true;
+      }
+      if (isReply) {
+        this.replyText = this.bubbleText();
+        this.replySeq = this.msgSeq;
+      }
     }
     this.msgSeq = null;
     this.text = '';
@@ -230,6 +273,7 @@ class TranscriptWriter {
         this.msgSeq = null;
         this.finalizeText();
       } else if (block.type === 'tool_use' && !this.tools.has(block.id)) {
+        this.sawTool = true;
         const name = String(block.name).startsWith(MCP_PREFIX) ? String(block.name).slice(MCP_PREFIX.length) : String(block.name);
         const act = activityFor(name);
         const row = appendRow(this.botId, 'tool-call', { type: 'tool-call', callId: block.id, name, label: act.label, status: 'running', args: block.input } satisfies ToolCallBody, this.generation);
@@ -272,10 +316,8 @@ class TranscriptWriter {
   finish(reason?: string) {
     if (this.inText) { this.inText = false; this.finalizeText(); }
     if (this.ctx.turn.stayedSilent && this.msgSeqs.length) {
-      for (const seq of this.msgSeqs) {
-        updateRow(this.botId, seq, { type: 'message', role: 'assistant', text: '', streaming: false }, this.generation);
-        db.prepare('DELETE FROM rows WHERE bot_id=? AND generation=? AND seq=?').run(this.botId, this.generation, seq);
-      }
+      for (const seq of [...this.msgSeqs]) this.dropMessageRow(seq);
+      this.replySeq = null;
       if (this.unreadAdded > 0) {
         db.prepare('UPDATE bots SET unread = MAX(0, unread - ?) WHERE id=? AND generation=?').run(this.unreadAdded, this.botId, this.generation);
         this.unreadAdded = 0;

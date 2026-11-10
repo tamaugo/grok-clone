@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ConnectedApp } from '@shared/types';
 import { BotAvatarFor } from '../../avatar/BotAvatar';
-import { api } from '../../lib/api';
+import { api, type AppInput } from '../../lib/api';
 import { CATALOG, catalogInput, type CatalogApp } from '../../lib/appCatalog';
 import { useStore } from '../../store';
 import { Icon } from '../Icon';
@@ -9,7 +9,7 @@ import { Menu } from '../Menu';
 import { ToolkitLogo } from '../ToolkitLogo';
 import { Modal } from './Modal';
 
-/** Design pill \u2192 catalog category. */
+/** Design pill → catalog category. */
 const PILLS: { label: string; category: string }[] = [
   { label: 'Productivity', category: 'productivity' },
   { label: 'Communication', category: 'communication' },
@@ -29,6 +29,21 @@ const splitCommand = (s: string): [string, string[]] => {
   return [parts[0] ?? '', parts.slice(1)];
 };
 
+/**
+ * Open the app's own sign-in (OAuth) in a new tab. The tab is opened before the request so
+ * browsers don't block it; the server reports the result through a `connections` event.
+ */
+async function signIn(input: AppInput) {
+  const tab = window.open('', '_blank');
+  try {
+    const { authUrl } = await api.oauthStart({ ...input, origin: window.location.origin, ...appsContextIds() });
+    if (tab) tab.location.href = authUrl; else window.location.href = authUrl;
+  } catch (e) {
+    tab?.close();
+    throw e;
+  }
+}
+
 type View = { kind: 'all' } | { kind: 'category'; category: string } | { kind: 'connected' } | { kind: 'form'; app: Toolkit };
 
 function AppRow({ app, onChanged, onForm }: { app: Toolkit; onChanged: () => void; onForm: (app: Toolkit) => void }) {
@@ -41,11 +56,12 @@ function AppRow({ app, onChanged, onForm }: { app: Toolkit; onChanged: () => voi
     if (!app.catalog || app.catalog.fields?.length) { onForm(app); return; }
     setState('busy'); setError(null);
     try {
+      if (app.catalog.oauth) { await signIn(catalogInput(app.catalog, {})); setState('waiting'); return; }
       const { test } = await api.addApp({ ...catalogInput(app.catalog, {}), ...appsContextIds() });
-      if (!test.ok) { await api.disconnect(app.slug).catch(() => {}); throw new Error(test.error || 'Couldn\u2019t reach the app'); }
+      if (!test.ok) { await api.disconnect(app.slug).catch(() => {}); throw new Error(test.error || 'Couldn’t reach the app'); }
       onChanged();
     } catch (e) {
-      setError((e as Error).message || 'Couldn\u2019t start the connection');
+      setError((e as Error).message || 'Couldn’t start the connection');
       setState('idle');
     }
   };
@@ -70,7 +86,7 @@ function AppRow({ app, onChanged, onForm }: { app: Toolkit; onChanged: () => voi
         <span className="app-row__connected is-static"><Icon name="check" size={12} opacity={0.56} />Built in</span>
       ) : (
         <button type="button" className="app-row__connect" onClick={connect} disabled={state === 'busy'}>
-          {state === 'busy' ? 'Opening\u2026' : state === 'waiting' ? 'Waiting\u2026' : 'Connect'}
+          {state === 'busy' ? 'Opening…' : state === 'waiting' ? 'Waiting…' : 'Connect'}
         </button>
       )}
     </div>
@@ -150,8 +166,8 @@ export function ConnectAppsModal() {
   const moreActive = activeCategory !== null && !PILLS.some((p) => p.category === activeCategory);
 
   let body: React.ReactNode;
-  if (error) body = <div className="apps-empty">Couldn\u2019t load apps. {error}</div>;
-  else if (!data && loading) body = <div className="apps-empty">Loading apps\u2026</div>;
+  if (error) body = <div className="apps-empty">Couldn’t load apps. {error}</div>;
+  else if (!data && loading) body = <div className="apps-empty">Loading apps…</div>;
   else if (view.kind === 'form') body = <ConnectForm app={view.app} onBack={() => setView({ kind: 'all' })} onDone={() => { refresh(); setView({ kind: 'connected' }); }} />;
   else if (view.kind === 'connected') body = connectedApps.length ? <Section title="Connected" apps={connectedApps} onChanged={refresh} onForm={onForm} /> : <div className="apps-empty">No apps connected yet.</div>;
   else if (searching || view.kind === 'category') {
@@ -159,7 +175,7 @@ export function ConnectAppsModal() {
       <Section title={searching ? `Results${activeCategory ? ` in ${pillLabel(activeCategory)}` : ''}` : pillLabel(activeCategory!)} apps={apps} onChanged={refresh} onForm={onForm} />
     ) : (
       <>
-        <div className="apps-empty">No apps match \u201c{debounced}\u201d.</div>
+        <div className="apps-empty">No apps match “{debounced}”.</div>
         <Section title="Add it yourself" apps={[CUSTOM]} onChanged={refresh} onForm={onForm} />
       </>
     );
@@ -234,12 +250,17 @@ function ConnectForm({ app, onBack, onDone }: { app: Toolkit; onBack: () => void
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [waiting, setWaiting] = useState(false);
+  // A finished sign-in arrives as a `connections` event.
+  const connectionsVersion = useStore((s) => s.connectionsVersion);
+  const startVersion = useRef(connectionsVersion);
+  useEffect(() => { if (waiting && connectionsVersion !== startVersion.current) onDone(); }, [waiting, connectionsVersion, onDone]);
   const put = (k: string, v: string) => setValues((cur) => ({ ...cur, [k]: v }));
   const fields = custom
     ? [
         { key: 'name', label: 'Name', placeholder: 'e.g. Linear', secret: false },
-        { key: 'url', label: 'MCP server URL, or a command to run', placeholder: 'https://\u2026 or npx -y some-mcp-server', secret: false },
-        { key: 'token', label: 'Token (optional)', placeholder: 'Sent as \u201cAuthorization: Bearer \u2026\u201d for URLs', secret: true },
+        { key: 'url', label: 'MCP server URL, or a command to run', placeholder: 'https://… or npx -y some-mcp-server', secret: false },
+        { key: 'token', label: 'Token (optional)', placeholder: 'Sent as “Authorization: Bearer …” for URLs', secret: true },
       ]
     : (app.catalog!.fields ?? []).map((f) => ({ key: f.key, label: f.label, placeholder: f.placeholder ?? '', secret: true }));
   const ready = fields.every((f) => f.label.includes('optional') || (values[f.key] ?? '').trim());
@@ -257,10 +278,25 @@ function ConnectForm({ app, onBack, onDone }: { app: Toolkit; onBack: () => void
           : { name: values.name ?? '', transport: 'stdio' as const, command, args };
       } else input = catalogInput(app.catalog!, values);
       const { app: added, test } = await api.addApp({ ...input, ...appsContextIds() });
-      if (!test.ok) { await api.disconnect(added.slug).catch(() => {}); throw new Error(test.error || 'Couldn\u2019t reach the app'); }
+      if (!test.ok) { await api.disconnect(added.slug).catch(() => {}); throw new Error(test.error || 'Couldn’t reach the app'); }
       onDone();
     } catch (e) {
-      setError((e as Error).message || 'Couldn\u2019t start the connection');
+      setError((e as Error).message || 'Couldn’t start the connection');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const signInUrl = custom && /^https?:\/\//i.test((values.url ?? '').trim()) && (values.name ?? '').trim() ? (values.url ?? '').trim() : null;
+  const startSignIn = async () => {
+    if (!signInUrl) return;
+    setBusy(true); setError(null);
+    try {
+      startVersion.current = connectionsVersion;
+      await signIn({ name: values.name ?? '', transport: 'http', url: signInUrl });
+      setWaiting(true);
+    } catch (e) {
+      setError((e as Error).message || 'Couldn’t start the sign-in');
     } finally {
       setBusy(false);
     }
@@ -291,9 +327,15 @@ function ConnectForm({ app, onBack, onDone }: { app: Toolkit; onBack: () => void
         </label>
       ))}
       {error && <div className="app-row__error app-connect__error">{error}</div>}
+      {waiting && <p className="app-connect__help">Finish signing in in the tab that opened. This closes on its own when the app is connected.</p>}
+      {custom && (
+        <p className="app-connect__help">
+          No token? <button type="button" className="link-btn link-btn--small" onClick={startSignIn} disabled={busy || !signInUrl}>Sign in at the app instead</button>
+        </p>
+      )}
       <div className="app-connect__actions">
         <button type="button" className="btn btn--secondary" onClick={onBack} disabled={busy}>Cancel</button>
-        <button type="button" className="btn btn--primary" onClick={submit} disabled={busy || !ready}>{busy ? 'Connecting\u2026' : 'Connect'}</button>
+        <button type="button" className="btn btn--primary" onClick={submit} disabled={busy || !ready}>{busy ? 'Connecting…' : 'Connect'}</button>
       </div>
     </section>
   );

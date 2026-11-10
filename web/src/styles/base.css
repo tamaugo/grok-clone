@@ -77,6 +77,8 @@ a { color: inherit; }
 
 .bot-avatar { position: relative; display: inline-block; flex-shrink: 0; }
 .bot-avatar svg { pointer-events: none; }
+.bot-avatar__ring { fill: var(--color-border-primary); stroke: var(--color-border-primary); }
+.bot-avatar__ring-gap { fill: var(--color-bg-elevated); stroke: var(--color-bg-elevated); }
 .bot-avatar__star {
   position: absolute; right: 0; bottom: 0; border-radius: var(--radius-full);
   background: var(--color-bot-yellow); box-shadow: var(--color-bg-tertiary) 0 0 0 0.5px inset;
@@ -88,7 +90,7 @@ a { color: inherit; }
   background: #FFFFFF; box-shadow: #1C1C1C14 0 0 0 0.5px inset;
 }
 .toolkit-logo img { object-fit: contain; }
-.toolkit-logo__letter { font-weight: 600; color: var(--color-text-secondary); line-height: 1; }
+.toolkit-logo__letter { font-weight: 600; color: #1C1C1CAD; line-height: 1; }
 
 .menu {
   position: absolute; z-index: 50; min-width: 200px; padding: 4px; border-radius: 12px;

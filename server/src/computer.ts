@@ -1,81 +1,53 @@
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
+import { chromium, type BrowserContext, type CDPSession, type Page } from 'playwright-core';
 import { env } from './env.js';
 import { getLive, setLive } from './store.js';
-import { memAvailableMb, workspaceFor } from './agent/claude.js';
+import { libraryFor, memAvailableMb, workspaceFor } from './agent/claude.js';
 
 /**
- * Each Bot's own computer: a virtual X display on this VM (Xvfb + openbox) with its own
- * Chromium profile, exposed to the viewer through x11vnc on localhost. Screens start on
- * first use, are capped (RAM), and go to sleep after a while without use or viewers.
+ * Each Bot's own computer: a headless Chromium with its own persistent profile, driven over
+ * CDP with Playwright. The Bot acts on the page through accessibility snapshots (element refs)
+ * and screenshots; the viewer gets a live JPEG screencast and can send mouse and keyboard input.
+ * Browsers start on first use, are capped (RAM), and go to sleep after a while without use or viewers.
  */
 
 export const SCREEN_W = 1280;
 export const SCREEN_H = 800;
-const FIRST_DISPLAY = 101;
+const HOME_URL = 'https://duckduckgo.com/';
 
-interface Screen { botId: string; display: number; vncPort: number; procs: ChildProcess[]; lastUsed: number }
+/** A viewer of the active tab. `retarget` moves it to a new active tab; `state` resends the URL and title. */
+interface Viewer { retarget: (page: Page) => void; state: () => void }
+
+interface Screen { botId: string; context: BrowserContext; page: Page; lastUsed: number; viewers: Set<Viewer> }
 
 const screens = new Map<string, Screen>();
 const starting = new Map<string, Promise<Screen>>();
-const viewers = new Map<string, number>();
 
 export const screenOf = (botId: string) => screens.get(botId) ?? null;
-export const activeScreens = () => [...screens.values()].map((s) => ({ botId: s.botId, display: s.display, lastUsed: s.lastUsed }));
+export const activeScreens = () => [...screens.values()].map((s) => ({ botId: s.botId, lastUsed: s.lastUsed, url: s.page.url() }));
 
-export function viewerOpened(botId: string) { viewers.set(botId, (viewers.get(botId) ?? 0) + 1); }
-export function viewerClosed(botId: string) {
-  const n = (viewers.get(botId) ?? 1) - 1;
-  if (n > 0) viewers.set(botId, n); else viewers.delete(botId);
-  const s = screens.get(botId);
-  if (s) s.lastUsed = Date.now();
+const CHROMIUM_CANDIDATES = [
+  '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome', '/snap/bin/chromium',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+];
+
+let browserInfo: { executablePath: string; userAgent: string } | null = null;
+
+/** The Chromium to run, and a normal (non-"HeadlessChrome") user agent for its version. */
+function chromiumInfo() {
+  if (browserInfo) return browserInfo;
+  const executablePath = env.chromiumPath || CHROMIUM_CANDIDATES.find((p) => fs.existsSync(p));
+  if (!executablePath) throw new Error('Chromium is not installed. Install it (apt install chromium) or set CHROMIUM_PATH.');
+  let major = '140';
+  try { major = execFileSync(executablePath, ['--version'], { encoding: 'utf8', timeout: 10_000 }).match(/(\d+)\.\d+/)?.[1] ?? major; } catch { /* keep default */ }
+  const platform = process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'X11; Linux x86_64';
+  browserInfo = { executablePath, userAgent: `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36` };
+  return browserInfo;
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-async function waitFor(check: () => boolean | Promise<boolean>, ms: number, what: string) {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    if (await check()) return;
-    await sleep(100);
-  }
-  throw new Error(`Timed out starting ${what}`);
-}
-
-const portOpen = (port: number) =>
-  new Promise<boolean>((resolve) => {
-    const s = net.connect(port, '127.0.0.1', () => { s.destroy(); resolve(true); });
-    s.on('error', () => resolve(false));
-  });
-
-/** Free display number, clearing lock files left by a crashed Xvfb. */
-function freeDisplay(): number {
-  const used = new Set([...screens.values()].map((s) => s.display));
-  for (let n = FIRST_DISPLAY; n < FIRST_DISPLAY + 50; n++) {
-    if (used.has(n)) continue;
-    const lock = `/tmp/.X${n}-lock`;
-    if (fs.existsSync(lock)) {
-      const pid = Number(fs.readFileSync(lock, 'utf8').trim());
-      let alive = false;
-      try { process.kill(pid, 0); alive = true; } catch { /* dead */ }
-      if (alive) continue;
-      fs.rmSync(lock, { force: true });
-      fs.rmSync(`/tmp/.X11-unix/X${n}`, { force: true });
-    }
-    return n;
-  }
-  throw new Error('No free display');
-}
-
-function launch(cmd: string, args: string[], display: number): ChildProcess {
-  const p = spawn(cmd, args, { env: { ...process.env, DISPLAY: `:${display}` }, stdio: 'ignore' });
-  p.on('error', (e) => console.warn(`[computer] ${cmd} failed:`, e.message));
-  return p;
-}
-
-/** The Bot's screen, started if needed (may put another idle Bot's screen to sleep). */
+/** The Bot's browser, started if needed (may put another idle Bot's browser to sleep). */
 export function screenFor(botId: string): Promise<Screen> {
   const s = screens.get(botId);
   if (s) { s.lastUsed = Date.now(); return Promise.resolve(s); }
@@ -87,77 +59,120 @@ export function screenFor(botId: string): Promise<Screen> {
   return p;
 }
 
+/** The Bot's active tab, its browser started if needed. */
+export async function pageFor(botId: string): Promise<Page> {
+  return (await screenFor(botId)).page;
+}
+
 async function startScreen(botId: string): Promise<Screen> {
   if (screens.size + starting.size >= env.maxScreens) {
-    // Reuse a slot: the least recently used screen whose Bot is idle and nobody is watching.
+    // Reuse a slot: the least recently used browser whose Bot is idle and nobody is watching.
     const victim = [...screens.values()]
-      .filter((s) => !getLive(s.botId).isRunning && !viewers.get(s.botId))
+      .filter((s) => !getLive(s.botId).isRunning && !s.viewers.size)
       .sort((a, b) => a.lastUsed - b.lastUsed)[0];
-    if (!victim) throw new Error(`All ${env.maxScreens} Bot screens are busy right now. Try again when another Bot finishes.`);
-    stopScreen(victim.botId, 'make room');
+    if (!victim) throw new Error(`All ${env.maxScreens} Bot computers are busy right now. Try again when another Bot finishes.`);
+    await stopScreen(victim.botId, 'make room');
   }
   const free = memAvailableMb();
-  if (free < env.minFreeMb + 300) throw new Error(`Not enough free memory to start a screen (${free} MB available). Close another Bot's computer first.`);
+  if (free < env.minFreeMb + 300) throw new Error(`Not enough free memory to start a computer (${free} MB available). Close another Bot's computer first.`);
 
-  const display = freeDisplay();
-  const vncPort = 5800 + display;
-  const procs: ChildProcess[] = [];
-  const screen: Screen = { botId, display, vncPort, procs, lastUsed: Date.now() };
-  try {
-    procs.push(launch('Xvfb', [`:${display}`, '-screen', '0', `${SCREEN_W}x${SCREEN_H}x24`, '-nolisten', 'tcp', '-dpi', '96'], display));
-    await waitFor(() => fs.existsSync(`/tmp/.X11-unix/X${display}`), 10_000, 'the screen');
-    procs.push(launch('openbox', [], display));
-    launch('xsetroot', ['-solid', '#2B2D31'], display);
-    procs.push(launch('x11vnc', ['-display', `:${display}`, '-localhost', '-rfbport', String(vncPort), '-forever', '-shared', '-nopw', '-quiet', '-noxdamage'], display));
-    await waitFor(() => portOpen(vncPort), 10_000, 'the screen viewer');
-  } catch (e) {
-    for (const p of procs) p.kill('SIGKILL');
-    throw e;
-  }
-  procs[0].on('exit', () => { if (screens.get(botId) === screen) stopScreen(botId, 'display exited'); });
+  const { executablePath, userAgent } = chromiumInfo();
+  const profile = path.join(workspaceFor(botId), '.grokbot', `chrome-${botId}`);
+  fs.mkdirSync(profile, { recursive: true });
+  // A Chromium killed mid-run leaves its profile locked.
+  for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) fs.rmSync(path.join(profile, f), { force: true });
+
+  const context = await chromium.launchPersistentContext(profile, {
+    executablePath,
+    headless: true,
+    viewport: { width: SCREEN_W, height: SCREEN_H },
+    deviceScaleFactor: 1,
+    userAgent,
+    acceptDownloads: true,
+    // The server closes browsers itself on shutdown (index.ts); Playwright's own handlers would keep it from exiting.
+    handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
+    ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars'],
+    args: ['--disable-dev-shm-usage', '--renderer-process-limit=4', '--password-store=basic', '--disable-features=Translate,MediaRouter'],
+  });
+  const first = context.pages()[0] ?? await context.newPage();
+  const screen: Screen = { botId, context, page: first, lastUsed: Date.now(), viewers: new Set() };
+
+  const watch = (page: Page) => {
+    page.on('dialog', (d) => { d.accept().catch(() => {}); });
+    page.on('download', (d) => {
+      const dest = path.join(libraryFor(botId), path.basename(d.suggestedFilename()) || 'download');
+      d.saveAs(dest).catch((e) => console.warn('[computer] download failed:', e.message));
+    });
+    page.on('framenavigated', (f) => { if (f === page.mainFrame() && screen.page === page) for (const v of screen.viewers) v.state(); });
+    page.on('close', () => {
+      if (screen.page !== page) return;
+      const rest = context.pages();
+      if (rest.length) setActive(screen, rest[rest.length - 1]);
+      else context.newPage().catch(() => {});
+    });
+  };
+  for (const p of context.pages()) watch(p);
+  // New tabs and popups become the active tab, like a person following a link.
+  context.on('page', (p) => { watch(p); setActive(screen, p); });
+  context.on('close', () => {
+    if (screens.get(botId) !== screen) return;
+    screens.delete(botId);
+    setLive(botId, { screen: false });
+    console.log(`[computer] browser closed for ${botId}`);
+  });
+
+  if (first.url() === 'about:blank') await first.goto(HOME_URL, { waitUntil: 'domcontentloaded', timeout: 15_000 }).catch(() => {});
   screens.set(botId, screen);
   setLive(botId, { screen: true });
-  console.log(`[computer] started screen :${display} for ${botId} (${screens.size}/${env.maxScreens})`);
+  console.log(`[computer] started browser for ${botId} (${screens.size}/${env.maxScreens})`);
   return screen;
 }
 
-/** Put a Bot's screen to sleep. Closing the display also closes every app on it; the browser profile is kept. */
-export function stopScreen(botId: string, reason = 'manual') {
+function setActive(screen: Screen, page: Page) {
+  if (screen.page === page) return;
+  screen.page = page;
+  for (const v of screen.viewers) v.retarget(page);
+}
+
+/** Switch the Bot's active tab. */
+export function activateTab(botId: string, page: Page) {
+  const s = screens.get(botId);
+  if (s) { setActive(s, page); void page.bringToFront().catch(() => {}); }
+}
+
+/** Put a Bot's computer to sleep. The browser profile (logins, history) is kept. */
+export async function stopScreen(botId: string, reason = 'manual') {
   const s = screens.get(botId);
   if (!s) return false;
   screens.delete(botId);
-  for (const p of [...s.procs].reverse()) { try { p.kill('SIGTERM'); } catch { /* gone */ } }
   setLive(botId, { screen: false });
-  console.log(`[computer] stopped screen :${s.display} for ${botId} (${reason})`);
+  await s.context.close().catch(() => {});
+  console.log(`[computer] stopped browser for ${botId} (${reason})`);
   return true;
+}
+
+/** Close every Bot's browser, e.g. when the server shuts down. */
+export async function stopAllScreens() {
+  await Promise.all([...screens.keys()].map((id) => stopScreen(id, 'shutdown')));
 }
 
 export function startIdleScreens() {
   const t = setInterval(() => {
     const cutoff = Date.now() - env.screenIdleMin * 60_000;
     for (const s of [...screens.values()]) {
-      if (s.lastUsed < cutoff && !viewers.get(s.botId) && !getLive(s.botId).isRunning) stopScreen(s.botId, 'idle');
+      if (s.lastUsed < cutoff && !s.viewers.size && !getLive(s.botId).isRunning) void stopScreen(s.botId, 'idle');
     }
   }, 60_000);
   t.unref();
 }
 
-// ---------- actions ----------
-
-function run(cmd: string, args: string[], display: number, timeout = 20_000): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    execFile(cmd, args, { env: { ...process.env, DISPLAY: `:${display}` }, encoding: 'buffer', maxBuffer: 32 * 1024 * 1024, timeout }, (err, out, errOut) => {
-      if (err) reject(new Error(`${cmd}: ${errOut?.toString().trim() || err.message}`));
-      else resolve(out);
-    });
-  });
-}
+// ---------- screenshots ----------
 
 const lastShots = new Map<string, Buffer>();
 
 export async function screenshot(botId: string): Promise<Buffer> {
   const s = await screenFor(botId);
-  const img = await run('import', ['-window', 'root', '-quality', '72', 'jpeg:-'], s.display);
+  const img = await s.page.screenshot({ type: 'jpeg', quality: 72, timeout: 15_000, animations: 'allow', caret: 'initial' });
   lastShots.set(botId, img);
   return img;
 }
@@ -169,29 +184,149 @@ export async function lastShotThumbnail(botId: string): Promise<string | null> {
   const small = await new Promise<Buffer>((resolve, reject) => {
     const p = execFile('convert', ['jpeg:-', '-resize', '480x', '-quality', '60', 'jpeg:-'], { encoding: 'buffer', maxBuffer: 8 * 1024 * 1024, timeout: 10_000 }, (err, out) => (err ? reject(err) : resolve(out)));
     p.stdin?.end(img);
-  });
+  }).catch(() => img);
   return `data:image/jpeg;base64,${small.toString('base64')}`;
 }
 
-/** Run xdotool on the Bot's screen. */
-export async function xdo(botId: string, args: string[]) {
-  const s = await screenFor(botId);
-  await run('xdotool', args, s.display);
+// ---------- live viewer ----------
+
+export interface ViewerIO {
+  sendFrame: (jpeg: Buffer) => void;
+  sendJson: (msg: unknown) => void;
 }
 
-export async function openBrowser(botId: string, url: string) {
-  const s = await screenFor(botId);
-  const profile = path.join(workspaceFor(botId), '.grokbot', `chrome-${botId}`);
-  fs.mkdirSync(profile, { recursive: true });
-  // If this profile's Chromium is already running, it opens the URL as a new tab and this process exits.
-  const p = spawn('chromium', [
-    `--user-data-dir=${profile}`,
-    '--no-first-run', '--no-default-browser-check', '--password-store=basic',
-    '--disable-dev-shm-usage', '--disable-gpu', '--renderer-process-limit=4',
-    '--hide-crash-restore-bubble', '--disable-features=Translate,MediaRouter',
-    '--start-maximized', `--window-size=${SCREEN_W},${SCREEN_H}`, '--window-position=0,0',
-    url,
-  ], { env: { ...process.env, DISPLAY: `:${s.display}` }, stdio: 'ignore', detached: true });
-  p.unref();
-  s.lastUsed = Date.now();
+/** Bit flags CDP uses for modifier keys. */
+const MODIFIERS = { alt: 1, ctrl: 2, meta: 4, shift: 8 } as const;
+
+const num = (v: unknown, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
+
+/**
+ * Stream the Bot's active tab to a viewer as a JPEG screencast and, in control mode,
+ * apply its mouse and keyboard input to the page over CDP.
+ */
+export async function attachViewer(botId: string, control: boolean, io: ViewerIO) {
+  const screen = await screenFor(botId);
+  let session: CDPSession | null = null;
+  let page = screen.page;
+  let closed = false;
+  const pressedKeys = new Map<string, { key: string; code: string }>();
+  const pressedButtons = new Map<string, { x: number; y: number }>();
+
+  const state = () => {
+    if (closed) return;
+    void page.title().catch(() => '').then((title) => io.sendJson({ type: 'state', url: page.url(), title, width: SCREEN_W, height: SCREEN_H, control }));
+  };
+
+  const start = async (p: Page) => {
+    const old = session;
+    session = null;
+    await old?.send('Page.stopScreencast').catch(() => {});
+    await old?.detach().catch(() => {});
+    if (closed) return;
+    page = p;
+    const s = await p.context().newCDPSession(p);
+    if (closed) { await s.detach().catch(() => {}); return; }
+    session = s;
+    s.on('Page.screencastFrame', (f) => {
+      io.sendFrame(Buffer.from(f.data, 'base64'));
+      s.send('Page.screencastFrameAck', { sessionId: f.sessionId }).catch(() => {});
+    });
+    await s.send('Page.startScreencast', { format: 'jpeg', quality: 75, maxWidth: SCREEN_W, maxHeight: SCREEN_H, everyNthFrame: 1 });
+    // The screencast only sends frames when something changes; send the current view right away.
+    const still = await s.send('Page.captureScreenshot', { format: 'jpeg', quality: 75 }).catch(() => null);
+    if (still && session === s) io.sendFrame(Buffer.from(still.data, 'base64'));
+    state();
+  };
+
+  const viewer: Viewer = { retarget: (p) => { void start(p).catch(() => {}); }, state };
+  screen.viewers.add(viewer);
+  try {
+    await start(page);
+  } catch (e) {
+    screen.viewers.delete(viewer);
+    throw e;
+  }
+
+  /** Let go of any keys and buttons the viewer was holding, so nothing stays stuck down. */
+  const release = async () => {
+    const s = session;
+    if (!s) return;
+    for (const { key, code } of pressedKeys.values()) await s.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code }).catch(() => {});
+    for (const [button, p] of pressedButtons) await s.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: button as 'left', ...p, buttons: 0, clickCount: 1 }).catch(() => {});
+    pressedKeys.clear();
+    pressedButtons.clear();
+  };
+
+  const onMessage = async (m: any) => {
+    const s = session;
+    if (!s || !control || !m || typeof m !== 'object') return;
+    screen.lastUsed = Date.now();
+    const modifiers = (m.alt ? MODIFIERS.alt : 0) | (m.ctrl ? MODIFIERS.ctrl : 0) | (m.meta ? MODIFIERS.meta : 0) | (m.shift ? MODIFIERS.shift : 0);
+    switch (m.type) {
+      case 'mouse': {
+        const type = m.action === 'down' ? 'mousePressed' : m.action === 'up' ? 'mouseReleased' : 'mouseMoved';
+        const button = ['left', 'middle', 'right'].includes(m.button) ? m.button : 'none';
+        const x = num(m.x), y = num(m.y);
+        await s.send('Input.dispatchMouseEvent', { type, x, y, button, buttons: num(m.buttons), clickCount: type === 'mouseMoved' ? 0 : Math.max(1, num(m.clickCount, 1)), modifiers });
+        if (button !== 'none') { if (type === 'mousePressed') pressedButtons.set(button, { x, y }); else if (type === 'mouseReleased') pressedButtons.delete(button); }
+        return;
+      }
+      case 'wheel':
+        await s.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: num(m.x), y: num(m.y), deltaX: num(m.deltaX), deltaY: num(m.deltaY), modifiers });
+        return;
+      case 'key': {
+        const key = String(m.key ?? ''), code = String(m.code ?? '');
+        if (m.action === 'up') {
+          await s.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, modifiers, windowsVirtualKeyCode: num(m.keyCode) });
+          pressedKeys.delete(code || key);
+          return;
+        }
+        // Printable characters (and Enter) carry text; shortcuts and control keys don't.
+        const text = key === 'Enter' ? '\r' : key.length === 1 && !(modifiers & (MODIFIERS.ctrl | MODIFIERS.meta)) ? key : undefined;
+        await s.send('Input.dispatchKeyEvent', {
+          type: text ? 'keyDown' : 'rawKeyDown', key, code, modifiers,
+          windowsVirtualKeyCode: num(m.keyCode), ...(text ? { text, unmodifiedText: text } : {}),
+        });
+        pressedKeys.set(code || key, { key, code });
+        return;
+      }
+      case 'text':
+        if (typeof m.text === 'string' && m.text) await s.send('Input.insertText', { text: m.text.slice(0, 10_000) });
+        return;
+      case 'navigate': {
+        const url = toUrl(String(m.url ?? ''));
+        if (url) await page.goto(url, { waitUntil: 'commit', timeout: 15_000 }).catch(() => {});
+        return;
+      }
+      case 'history':
+        await (num(m.delta) < 0 ? page.goBack({ waitUntil: 'commit', timeout: 15_000 }) : page.goForward({ waitUntil: 'commit', timeout: 15_000 })).catch(() => {});
+        return;
+      case 'reload':
+        await page.reload({ waitUntil: 'commit', timeout: 15_000 }).catch(() => {});
+        return;
+    }
+  };
+
+  const close = async () => {
+    if (closed) return;
+    await release();
+    closed = true;
+    screen.viewers.delete(viewer);
+    screen.lastUsed = Date.now();
+    const s = session;
+    session = null;
+    await s?.send('Page.stopScreencast').catch(() => {});
+    await s?.detach().catch(() => {});
+  };
+
+  return { onMessage: (m: unknown) => { void onMessage(m).catch(() => {}); }, close };
+}
+
+/** What a person typed in the address bar: a URL, a bare domain, or a search. */
+export function toUrl(input: string): string | null {
+  const t = input.trim();
+  if (!t) return null;
+  if (/^(https?|file):\/\//i.test(t) || /^about:/i.test(t)) return t;
+  if (/^[^\s/]+\.[^\s]{2,}$/.test(t) || /^localhost(:\d+)?(\/|$)/.test(t)) return `https://${t}`;
+  return `${HOME_URL}?q=${encodeURIComponent(t)}`;
 }

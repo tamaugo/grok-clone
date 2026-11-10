@@ -13,11 +13,11 @@ import { checkinsApi } from './routes-proactive.js';
 import { roomsApi } from './routes-rooms.js';
 import { enqueue } from './agent/loop.js';
 import { mcpApi } from './agent/mcp.js';
-import { memAvailableMb, runningCount } from './agent/claude.js';
+import { memAvailableKnownMb, runningCount } from './agent/claude.js';
 import { configApi } from './routes-config.js';
-import { attachVncRelay } from './vnc.js';
+import { attachScreenViewer } from './viewer.js';
 import { expireStaleApprovals } from './agent/approvals.js';
-import { activeScreens, startIdleScreens } from './computer.js';
+import { activeScreens, startIdleScreens, stopAllScreens } from './computer.js';
 import type { Server } from 'node:http';
 
 initSubagents();
@@ -26,7 +26,7 @@ setupLocalUser();
 expireStaleApprovals();
 
 const app = new Hono();
-app.get('/api/health', (c) => c.json({ ok: true, running: runningCount(), maxConcurrent: env.maxConcurrent, screens: activeScreens().length, maxScreens: env.maxScreens, memAvailableMb: memAvailableMb() }));
+app.get('/api/health', (c) => c.json({ ok: true, running: runningCount(), maxConcurrent: env.maxConcurrent, screens: activeScreens().length, maxScreens: env.maxScreens, memAvailableMb: memAvailableKnownMb() }));
 app.route('/mcp', mcpApi);
 app.route('/api/checkins', checkinsApi);
 app.route('/api/rooms', roomsApi);
@@ -43,10 +43,18 @@ if (fs.existsSync(webDist)) {
 const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, (info) =>
   console.log(`[grokbot] server on http://${env.host}:${info.port} (Claude Code, max ${env.maxConcurrent} Bots at once, min ${env.minFreeMb} MB free)`),
 );
-attachVncRelay(server as unknown as Server);
+attachScreenViewer(server as unknown as Server);
 startIdleScreens();
 // GROKBOT_NO_SCHEDULER=1 for extra dev/test servers sharing a database copy, so routines don't fire twice.
 const runScheduler = process.env.GROKBOT_NO_SCHEDULER !== '1';
 initRoutines(enqueue, runScheduler);
 initProactive(enqueue, runScheduler);
 if (!runScheduler) console.log('[grokbot] scheduler disabled (GROKBOT_NO_SCHEDULER=1)');
+
+// Close the Bots' browsers before exiting, so a restart doesn't leave Chromium processes behind.
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(sig, () => {
+    setTimeout(() => process.exit(0), 5_000).unref();
+    void stopAllScreens().finally(() => process.exit(0));
+  });
+}

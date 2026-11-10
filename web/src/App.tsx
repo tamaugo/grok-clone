@@ -63,5 +63,5 @@ export function App() {
   const user = useStore((s) => s.user);
   useEffect(() => { useStore.getState().checkAuth(); }, []);
   if (!authChecked) return <div className="boot" />;
-  return user ? <Shell /> : <div className="boot">Can't reach the Grokbot server.</div>;
+  return user ? <Shell /> : <div className="boot">Can't reach the Grok Bot server.</div>;
 }

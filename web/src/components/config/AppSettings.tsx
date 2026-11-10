@@ -100,9 +100,10 @@ function GeneralSection() {
 
 // ---------------------------------------------------------------------------
 
-const screenLabel = (display: number) => `Screen ${display - 100}`;
+/** Where a Bot's browser is, e.g. "github.com". */
+const pageLabel = (url: string) => { try { return new URL(url).host || 'New tab'; } catch { return 'New tab'; } };
 
-interface Health { running: number; maxConcurrent: number; memAvailableMb: number }
+interface Health { running: number; maxConcurrent: number; memAvailableMb: number | null }
 
 function ComputerSection() {
   const bots = useStore((s) => s.bots);
@@ -134,10 +135,24 @@ function ComputerSection() {
     finally { setBusy(null); load(); }
   };
   const byId = new Map(bots.map((b) => [b.id, b]));
+  const [restarting, setRestarting] = useState(false);
+  const restart = async () => {
+    setNote(null);
+    try { await configApi.restartServer(); } catch (e) { setNote((e as Error).message); return; }
+    setRestarting(true);
+    // Wait for the old process to go away, then for the new one to answer, and reload onto the new version.
+    let down = false;
+    const poll = setInterval(async () => {
+      const up = await fetch('/api/health').then((r) => r.ok).catch(() => false);
+      if (!up) down = true;
+      else if (down) { clearInterval(poll); location.reload(); }
+    }, 1000);
+    setTimeout(() => { clearInterval(poll); setRestarting(false); setNote('The server didn’t come back. Check that it is set to restart automatically.'); }, 60000);
+  };
 
   return (
     <>
-      <PageHead title="Computer" sub="Your Bots share your VM. Each Bot works on its own screen." />
+      <PageHead title="Computer" sub="Your Bots share your VM. Each Bot browses on its own computer." />
       <section className="cfg-section">
         <div className="cfg-card">
           <div className="cfg-row">
@@ -171,12 +186,12 @@ function ComputerSection() {
                 {bot ? <BotAvatarFor bot={bot} size={28} /> : <span className="cfg-row__ph" />}
                 <div className="cfg-row__text">
                   <div className="cfg-row__title">{bot?.name ?? 'Removed Bot'}</div>
-                  <div className="cfg-row__sub">{screenLabel(s.display)} · used {relativeShort(s.lastUsed) === 'now' ? 'just now' : `${relativeShort(s.lastUsed)}${/^\d/.test(relativeShort(s.lastUsed)) ? ' ago' : ''}`}</div>
+                  <div className="cfg-row__sub">{pageLabel(s.url)} · used {relativeShort(s.lastUsed) === 'now' ? 'just now' : `${relativeShort(s.lastUsed)}${/^\d/.test(relativeShort(s.lastUsed)) ? ' ago' : ''}`}</div>
                 </div>
                 <ConfirmButton
                   className="cfg-btn cfg-btn--secondary"
                   confirmLabel="Reset screen"
-                  title="Closes everything open on this screen"
+                  title="Closes every tab in this Bot’s browser"
                   onConfirm={async () => { try { await configApi.sleep(s.botId); setNote(null); load(); } catch (e) { setNote((e as Error).message); } }}
                 >
                   Reset
@@ -185,7 +200,7 @@ function ComputerSection() {
             );
           })}
         </div>
-        <div className="cfg-field__hint">Reset closes every window on that Bot’s screen, so it starts clean next time. Up to {details?.maxScreens ?? 2} Bots can have a screen at once.</div>
+        <div className="cfg-field__hint">Reset closes every tab in that Bot’s browser, so it starts clean next time. Logins are kept. Up to {details?.maxScreens ?? 2} Bots can have a screen at once.</div>
       </section>
 
       <section className="cfg-section">
@@ -194,8 +209,21 @@ function ComputerSection() {
           <div className="cfg-row">
             <div className="cfg-row__text">
               <div className="cfg-row__title">{health ? `${health.running} of ${health.maxConcurrent} Bots working` : 'Checking…'}</div>
-              <div className="cfg-row__sub">{health ? `${health.memAvailableMb.toLocaleString()} MB free. To protect your VM’s memory, extra Bots wait in line.` : ''}</div>
+              <div className="cfg-row__sub">{health ? `${health.memAvailableMb === null ? '' : `${health.memAvailableMb.toLocaleString()} MB free. `}To protect your VM’s memory, extra Bots wait in line.` : ''}</div>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="cfg-section">
+        <div className="cfg-section__label">Update</div>
+        <div className="cfg-card">
+          <div className="cfg-row">
+            <div className="cfg-row__text">
+              <div className="cfg-row__title">Restart Grok Bot</div>
+              <div className="cfg-row__sub">{restarting ? 'Restarting… this page reloads when it’s back.' : 'Restarts the server to run the newest version. Bots that are working stop and can be asked to continue.'}</div>
+            </div>
+            <ConfirmButton className="cfg-btn cfg-btn--secondary" confirmLabel="Restart now" disabled={restarting} onConfirm={restart}>Restart</ConfirmButton>
           </div>
         </div>
       </section>

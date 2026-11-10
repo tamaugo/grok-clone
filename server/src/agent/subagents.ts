@@ -29,9 +29,9 @@ export function createSubagent(parentId: string, goal: string, label?: string) {
     `Work independently with your own tools in your parent's working folder. When you finish (or get blocked), call send_to_bot with bot_name "${p.name}" and a concise result, then stop. Do not message the user directly.` +
     (p.instructions ? `\n\nYour parent's standing instructions:\n${p.instructions}` : '');
   db.prepare(
-    `INSERT INTO bots(id,user_id,name,label,description,instructions,avatar_shape,avatar_color,mode,is_primary,effort,parent_bot_id,hidden,created_at,updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,0,?,?,1,?,?)`,
-  ).run(id, p.user_id, name, 'Subagent', `Subagent of ${p.name}`, instructions, p.avatar_shape, p.avatar_color, p.mode, p.effort, parentId, now(), now());
+    `INSERT INTO bots(id,user_id,name,label,description,instructions,avatar_shape,avatar_color,mode,is_primary,effort,model,parent_bot_id,hidden,created_at,updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?,1,?,?)`,
+  ).run(id, p.user_id, name, 'Subagent', `Subagent of ${p.name}`, instructions, p.avatar_shape, p.avatar_color, p.mode, p.effort, p.model ?? 'default', parentId, now(), now());
   return { id, name, parentName: p.name as string, userId: p.user_id as string };
 }
 
@@ -54,7 +54,7 @@ export function deleteSubagent(parentId: string, subId: string) {
   const s = db.prepare('SELECT user_id FROM bots WHERE id=? AND parent_bot_id=?').get(subId, parentId) as any;
   if (!s) return false;
   expirePending(subId);
-  stopScreen(subId, 'subagent stopped');
+  void stopScreen(subId, 'subagent stopped');
   db.prepare('DELETE FROM bots WHERE id=?').run(subId);
   return true;
 }

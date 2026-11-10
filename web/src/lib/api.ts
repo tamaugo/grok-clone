@@ -40,7 +40,7 @@ export const api = {
   me: () => req<{ user: User | null; devLogin: boolean }>('GET', '/auth/me'),
 
   bots: () => req<{ bots: Bot[]; live: LiveState[] }>('GET', '/bots'),
-  createBot: (b: Pick<Bot, 'name' | 'avatarShape' | 'avatarColor' | 'mode'>) => req<{ bot: Bot }>('POST', '/bots', b),
+  createBot: (b: Pick<Bot, 'name' | 'avatarShape' | 'avatarColor' | 'mode' | 'model' | 'effort'>) => req<{ bot: Bot }>('POST', '/bots', b),
   markRead: (id: string) => req<{ ok: true }>('POST', `/bots/${id}/read`),
   rows: (id: string) => req<{ generation: number; rows: Row[] }>('GET', `/bots/${id}/rows`),
   send: (id: string, text: string) => req<{ row: Row }>('POST', `/bots/${id}/messages`, { text }),
@@ -61,6 +61,8 @@ export const api = {
   apps: () => req<{ apps: ConnectedApp[] }>('GET', '/apps'),
   addApp: (app: AppInput & { botId?: string; seq?: number }) => req<{ app: ConnectedApp; test: AppTest }>('POST', '/apps', app),
   testApp: (slug: string) => req<AppTest>('POST', `/apps/${slug}/test`),
+  /** Start a sign-in (OAuth) for a hosted app; the browser then opens `authUrl`. */
+  oauthStart: (app: AppInput & { origin: string; botId?: string; seq?: number }) => req<{ authUrl: string }>('POST', '/apps/oauth/start', app),
   disconnect: (slug: string) => req<{ ok: true }>('DELETE', `/apps/${slug}`),
 
   roomMembers: (id: string) => req<{ members: RoomMember[] }>('GET', `/rooms/${id}/members`),

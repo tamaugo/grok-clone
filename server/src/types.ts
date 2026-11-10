@@ -10,6 +10,14 @@ export type AvatarColor =
 
 export interface User { id: string; email: string; name: string; avatarUrl: string | null }
 
+/** Claude models a Bot can run on, as Claude Code `--model` IDs. 'default' = CLAUDE_MODEL, or the account's default. */
+export const BOT_MODELS = ['default', 'claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-2', 'claude-sonnet-4-6'] as const;
+export type BotModel = (typeof BOT_MODELS)[number];
+
+/** How long a Bot thinks before it acts, as Claude Code `--effort` levels. */
+export const BOT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type BotEffort = (typeof BOT_EFFORTS)[number];
+
 export interface Bot {
   id: string;
   name: string;
@@ -23,7 +31,8 @@ export interface Bot {
   /** 'room' = group chat (members answer instead of the bot itself). */
   kind?: 'agent' | 'room';
   pinned: boolean;
-  effort: 'low' | 'medium' | 'high' | 'xhigh';
+  effort: BotEffort;
+  model: BotModel;
   generation: number;
   unread: number;
   lastPreview: string | null;
@@ -124,6 +133,7 @@ export interface ConnectedApp {
   args: string[];
   headerNames: string[];
   envNames: string[];
+  oauth: boolean;
   createdAt: number;
 }
 

@@ -28,6 +28,7 @@ export function toBot(r: any): Bot {
     kind: r.kind === 'room' ? 'room' : 'agent',
     pinned: !!r.pinned,
     effort: r.effort,
+    model: r.model ?? 'default',
     generation: r.generation,
     unread: r.unread,
     lastPreview: lastPreview ? lastPreview.slice(0, 140) : null,

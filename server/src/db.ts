@@ -117,5 +117,13 @@ function addColumn(table: string, col: string, ddl: string) {
 }
 /** Claude Code session the Bot resumes; cleared when the conversation is reset. */
 addColumn('bots', 'claude_session', 'TEXT');
+/** Claude model alias the Bot runs on (see BOT_MODELS). */
+addColumn('bots', 'model', "TEXT NOT NULL DEFAULT 'default'");
+// Bots saved with the old `--model` aliases move to the matching model ID.
+db.exec(`UPDATE bots SET model = CASE model
+  WHEN 'fable' THEN 'claude-fable-5-2' WHEN 'opus' THEN 'claude-opus-5-5' WHEN 'sonnet' THEN 'claude-sonnet-5-5' WHEN 'haiku' THEN 'claude-haiku-5-5' ELSE 'default' END
+  WHERE model IN ('fable', 'opus', 'sonnet', 'haiku')`);
+/** Sign-in state for apps connected through OAuth (see oauth.ts). */
+addColumn('apps', 'oauth', 'TEXT');
 
 export const now = () => Date.now();

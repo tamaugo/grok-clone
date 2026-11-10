@@ -1,5 +1,6 @@
 /* Design tokens: light theme. */
 :root {
+  color-scheme: light;
   --color-bg-chrome: #FCFCFC;
   --color-bg-sidebar: #F5F5F5;
   --color-bg-pane: #FFFFFF;
@@ -80,10 +81,15 @@
   --color-success-text: #00854A;
   --shadow-popover: #1C1C1C1A 0 10px 20px -3px, #1C1C1C14 0 4px 6px -4px;
   --bot-on-action: #FFFFFF;
+  --bubble-sheen-agent: #FFFFFF29;
+  /* The black Bot's avatar: ink on light, light ink on dark (like its bubble and buttons). */
+  --color-avatar-black: #000000;
+  --color-avatar-black-shine: #FFFFFF;
 }
 
 /* ---------- dark theme. Flat: no shadows. ---------- */
 :root[data-theme='dark'] {
+  color-scheme: dark;
   --color-bg-chrome: #121212;
   --color-bg-sidebar: #0E0E0E;
   --color-bg-pane: #161616;
@@ -131,4 +137,7 @@
   --color-warn-text: #E28600;
   --color-success-bg: #14C3701F;
   --color-success-text: #00BA69;
+  --bubble-sheen-agent: #FFFFFF08;
+  --color-avatar-black: #F5F5F5;
+  --color-avatar-black-shine: #161616;
 }

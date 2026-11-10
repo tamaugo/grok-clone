@@ -1,5 +1,5 @@
 import type { AvatarColor, AvatarShape, Bot } from '@shared/types';
-import { palette } from '../lib/colors';
+import { BOT_COLORS, palette } from '../lib/colors';
 import { Icon } from '../components/Icon';
 import { SHAPES, type ShapeDef } from './shapes.gen';
 
@@ -22,7 +22,7 @@ interface Props {
   /** Slot size in px. The drawing overflows the slot by the design's 1.533x ratio. */
   size: number;
   star?: boolean;
-  /** Selected-shape ring (white gap + gray outline following the silhouette). */
+  /** Selected-shape ring (a gap in the surface color + an outline following the silhouette). */
   ring?: boolean;
   className?: string;
   title?: string;
@@ -35,16 +35,17 @@ export function BotAvatar({ shape, color, size, star, ring, className, title }: 
   const draw = size * OVERDRAW;
   const off = (draw - size) / 2;
   const fill = palette(color).fill;
+  const shine = palette(color) === BOT_COLORS.black ? 'var(--color-avatar-black-shine)' : '#FFFFFF';
   // Stroke widths in viewBox units: viewBox width maps to `draw` px.
   const vbw = Number(def.viewBox.split(/\s+/)[2]);
   const px = vbw / draw;
   return (
     <span className={`bot-avatar ${className ?? ''}`} style={{ width: size, height: size }} title={title} role="img" aria-label={title}>
       <svg width={draw} height={draw} viewBox={def.viewBox} style={{ position: 'absolute', left: -off, top: -off, overflow: 'visible' }} aria-hidden>
-        {ring && <path d={def.outline} fill="#1C1C1C3D" stroke="#1C1C1C3D" strokeWidth={px * 2 * 3.4} strokeLinejoin="round" />}
-        {ring && <path d={def.outline} fill="#FFFFFF" stroke="#FFFFFF" strokeWidth={px * 2 * 2.4} strokeLinejoin="round" />}
-        <path d={def.outline} fill="#FFFFFF" />
-        <path d={def.d} fill={fill} fillRule="evenodd" />
+        {ring && <path d={def.outline} className="bot-avatar__ring" strokeWidth={px * 2 * 3.4} strokeLinejoin="round" />}
+        {ring && <path d={def.outline} className="bot-avatar__ring-gap" strokeWidth={px * 2 * 2.4} strokeLinejoin="round" />}
+        <path d={def.outline} style={{ fill: shine }} />
+        <path d={def.d} style={{ fill }} fillRule="evenodd" />
       </svg>
       {star && (
         <span className="bot-avatar__star" style={{ width: size * 0.2667, height: size * 0.2667 }}>

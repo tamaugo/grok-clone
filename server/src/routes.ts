@@ -10,12 +10,13 @@ import { runRoutine, scheduleRoutine, unscheduleRoutine } from './routines.js';
 import { dispatchRoomMessage } from './agent/rooms.js';
 import { activeScreens, screenFor, screenOf, screenshot, stopScreen } from './computer.js';
 import { env } from './env.js';
-import { addApp, appBySlug, listApps, removeApp, testApp } from './apps.js';
+import { addApp, appBySlug, listApps, removeApp, testApp, type App } from './apps.js';
+import { finishOAuth, startOAuth } from './oauth.js';
 import { deletePolicy, expirePending, listPolicies, resolveApproval } from './agent/approvals.js';
+import { BOT_EFFORTS, BOT_MODELS, type AvatarColor, type AvatarShape, type BotEffort, type BotModel } from './types.js';
 import fs from 'node:fs';
 import { bodyLimit } from 'hono/body-limit';
 import { findUpload, MAX_ATTACHMENTS, MAX_UPLOAD_BYTES, saveUpload, UploadError } from './uploads.js';
-import type { AvatarColor, AvatarShape } from './types.js';
 
 export const api = new Hono<AuthVars>();
 
@@ -28,13 +29,16 @@ function hashPick<T>(id: string, list: T[]): T {
   return list[h % list.length];
 }
 
-function createBot(userId: string, b: { name: string; label?: string; description?: string; instructions?: string; avatarShape?: string; avatarColor?: string; mode?: string; isPrimary?: boolean }) {
+const isBotModel = (m: unknown): m is BotModel => BOT_MODELS.includes(m as BotModel);
+const isBotEffort = (e: unknown): e is BotEffort => BOT_EFFORTS.includes(e as BotEffort);
+
+function createBot(userId: string, b: { name: string; label?: string; description?: string; instructions?: string; avatarShape?: string; avatarColor?: string; mode?: string; model?: string; effort?: string; isPrimary?: boolean }) {
   const id = newId('bot');
   const shape = SHAPES.includes(b.avatarShape as AvatarShape) ? b.avatarShape : hashPick(id, SHAPES.slice(0, 13));
   const color = COLORS.includes(b.avatarColor as AvatarColor) ? b.avatarColor : hashPick(id, COLORS.filter((c) => c !== 'black'));
   db.prepare(
-    'INSERT INTO bots(id,user_id,name,label,description,instructions,avatar_shape,avatar_color,mode,is_primary,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-  ).run(id, userId, b.name.trim().slice(0, 60) || 'New Bot', b.label ?? '', b.description ?? '', b.instructions ?? '', shape, color, b.mode === 'teammate' ? 'teammate' : 'personal', b.isPrimary ? 1 : 0, now(), now());
+    'INSERT INTO bots(id,user_id,name,label,description,instructions,avatar_shape,avatar_color,mode,model,effort,is_primary,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+  ).run(id, userId, b.name.trim().slice(0, 60) || 'New Bot', b.label ?? '', b.description ?? '', b.instructions ?? '', shape, color, b.mode === 'teammate' ? 'teammate' : 'personal', isBotModel(b.model) ? b.model : 'default', isBotEffort(b.effort) ? b.effort : 'medium', b.isPrimary ? 1 : 0, now(), now());
   hub.emit(userId, { type: 'roster' });
   return getBot(id)!;
 }
@@ -90,7 +94,9 @@ api.patch('/bots/:id', async (c) => {
   const b = ownBot(c.get('user').id, c.req.param('id'));
   if (!b) return c.json({ error: 'not found' }, 404);
   const p = await c.req.json();
-  const cols: Record<string, string> = { name: 'name', label: 'label', description: 'description', instructions: 'instructions', avatarShape: 'avatar_shape', avatarColor: 'avatar_color', mode: 'mode', effort: 'effort', pinned: 'pinned' };
+  const cols: Record<string, string> = { name: 'name', label: 'label', description: 'description', instructions: 'instructions', avatarShape: 'avatar_shape', avatarColor: 'avatar_color', mode: 'mode', effort: 'effort', model: 'model', pinned: 'pinned' };
+  if (p.model !== undefined && !isBotModel(p.model)) return c.json({ error: 'Unknown model.' }, 400);
+  if (p.effort !== undefined && !isBotEffort(p.effort)) return c.json({ error: 'Unknown thinking level.' }, 400);
   for (const [k, col] of Object.entries(cols)) {
     if (p[k] !== undefined) db.prepare(`UPDATE bots SET ${col}=?, updated_at=? WHERE id=?`).run(typeof p[k] === 'boolean' ? (p[k] ? 1 : 0) : p[k], now(), b.id);
   }
@@ -107,11 +113,11 @@ api.delete('/bots/:id', (c) => {
   for (const sub of db.prepare('SELECT id FROM bots WHERE parent_bot_id=?').all(b.id) as { id: string }[]) {
     interrupt(sub.id);
     expirePending(sub.id);
-    stopScreen(sub.id, 'parent bot deleted');
+    void stopScreen(sub.id, 'parent bot deleted');
     db.prepare('DELETE FROM bots WHERE id=?').run(sub.id);
   }
   for (const r of listRoutines(b.id)) unscheduleRoutine(r.id);
-  stopScreen(b.id, 'bot deleted');
+  void stopScreen(b.id, 'bot deleted');
   for (const room of db.prepare("SELECT id, members FROM bots WHERE user_id=? AND kind='room'").all(b.user_id) as { id: string; members: string | null }[]) {
     const ids: string[] = room.members ? JSON.parse(room.members) : [];
     if (ids.includes(b.id)) {
@@ -299,7 +305,13 @@ api.delete('/memories/:id', (c) => {
   return c.json({ ok: true });
 });
 
-// ---------- computer (each Bot's virtual screen on this VM) ----------
+// ---------- computer (each Bot's headless browser on this VM) ----------
+
+// Replies first, then exits non-zero so the supervisor (systemd, tsx watch) starts a fresh process on the newest code.
+api.post('/restart', (c) => {
+  setTimeout(() => process.exit(1), 300);
+  return c.json({ ok: true });
+});
 
 api.get('/computer', (c) => c.json({ screens: activeScreens(), maxScreens: env.maxScreens, idleMinutes: env.screenIdleMin }));
 
@@ -310,10 +322,10 @@ api.post('/bots/:id/computer/start', async (c) => {
   return c.json({ ok: true });
 });
 
-api.post('/bots/:id/computer/stop', (c) => {
+api.post('/bots/:id/computer/stop', async (c) => {
   const b = ownBot(c.get('user').id, c.req.param('id'));
   if (!b) return c.json({ error: 'not found' }, 404);
-  return c.json({ ok: stopScreen(b.id) });
+  return c.json({ ok: await stopScreen(b.id) });
 });
 
 /** Current frame of the Bot's screen; 204 while it's asleep (never wakes it). */
@@ -333,20 +345,58 @@ api.get('/bots/:id/screenshot', async (c) => {
 
 api.get('/apps', (c) => c.json({ apps: listApps() }));
 
+/** A Bot that asked for this app (through a connect card) gets told it's ready. */
+function tellBotAppConnected(userId: string, app: App, botId?: string, seq?: number) {
+  if (!botId || !seq || !ownBot(userId, botId)) return;
+  const row = getRow(botId, Number(seq));
+  if (row?.body.type === 'card' && row.body.card === 'connect') updateRow(botId, row.seq, { ...row.body, status: 'connected' });
+  enqueue(botId, { type: 'system', text: `The user connected ${app.name}. Its tools are named mcp__app_${app.slug}__<tool>. Continue with what you were doing.` });
+}
+
 api.post('/apps', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const app = addApp(body);
   if (typeof app === 'string') return c.json({ error: app }, 400);
   const test = await testApp(app.slug);
   hub.emit(c.get('user').id, { type: 'connections' });
-  // Bots that asked for this app get told it's ready once the connection check passes.
   const { botId, seq } = body as { botId?: string; seq?: number };
-  if (test.ok && botId && seq && ownBot(c.get('user').id, botId)) {
-    const row = getRow(botId, Number(seq));
-    if (row?.body.type === 'card' && row.body.card === 'connect') updateRow(botId, row.seq, { ...row.body, status: 'connected' });
-    enqueue(botId, { type: 'system', text: `The user connected ${app.name}. Its tools are named mcp__app_${app.slug}__<tool>. Continue with what you were doing.` });
-  }
+  if (test.ok) tellBotAppConnected(c.get('user').id, app, botId, seq);
   return c.json({ app, test });
+});
+
+/** Start a sign-in for an app that uses OAuth. The browser then opens `authUrl`. */
+api.post('/apps/oauth/start', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    return c.json(await startOAuth(body, String(body.origin ?? ''), { botId: body.botId, seq: body.seq }));
+  } catch (e: any) {
+    return c.json({ error: String(e?.message ?? e).slice(0, 300) }, 400);
+  }
+});
+
+const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+const oauthPage = (title: string, text: string, close: boolean) =>
+  `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><title>${escapeHtml(title)}</title>` +
+  `<body style="font-family:-apple-system,system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:90vh;margin:0;text-align:center;padding:24px">` +
+  `<h1 style="font-size:17px;margin:0 0 6px">${escapeHtml(title)}</h1><p style="font-size:14px;opacity:.7;margin:0;max-width:420px">${escapeHtml(text)}</p><p style="font-size:14px;margin:16px 0 0"><a href="/" style="color:inherit">Back to your Bots</a></p>${close ? '<script>setTimeout(() => window.close(), 1200)</script>' : ''}`;
+
+/** The app sends the browser here after the sign-in. */
+api.get('/apps/oauth/callback', async (c) => {
+  const { code, state, error, error_description: detail } = c.req.query();
+  if (error || !code || !state) return c.html(oauthPage('Sign-in cancelled', detail || error || 'The app did not finish the sign-in. You can close this tab and try again.', false), 400);
+  try {
+    const { app, botId, seq } = await finishOAuth(state, code);
+    const test = await testApp(app.slug);
+    if (!test.ok) {
+      removeApp(app.slug);
+      return c.html(oauthPage(`Couldn’t connect ${app.name}`, test.error || 'The app did not answer after the sign-in.', false), 502);
+    }
+    hub.emit(c.get('user').id, { type: 'connections' });
+    tellBotAppConnected(c.get('user').id, app, botId, seq);
+    return c.html(oauthPage(`${app.name} is connected`, 'You can close this tab and go back to your Bots.', true));
+  } catch (e: any) {
+    return c.html(oauthPage('Sign-in failed', String(e?.message ?? e).slice(0, 300), false), 400);
+  }
 });
 
 api.post('/apps/:slug/test', async (c) => {

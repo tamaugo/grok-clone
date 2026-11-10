@@ -53,7 +53,7 @@
   font-size: var(--text-message); line-height: 22px; letter-spacing: 0.15px;
   box-shadow: var(--bubble-ring); overflow-wrap: anywhere;
 }
-.bubble.is-agent { background: linear-gradient(180deg, #FFFFFF29 0%, #FFFFFF00 100%), var(--color-bubble-agent); color: var(--color-ink); }
+.bubble.is-agent { background: linear-gradient(180deg, var(--bubble-sheen-agent) 0%, #FFFFFF00 100%), var(--color-bubble-agent); color: var(--color-ink); }
 .bubble.is-user { background: linear-gradient(180deg, #FFFFFF0F 0%, #FFFFFF00 100%), var(--bot-bubble, var(--color-bubble-user)); color: #FFFFFF; }
 .bubble__plain { white-space: pre-wrap; }
 /* Grouped bubble "tail" corners (README: bottom-left on first, top-left on last). Mirrored for user bubbles. */

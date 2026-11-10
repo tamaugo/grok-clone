@@ -3,8 +3,10 @@ import type { AvatarColor, AvatarShape, Bot } from '@shared/types';
 import { BotAvatar, PICKER_SHAPES } from '../../avatar/BotAvatar';
 import { api } from '../../lib/api';
 import { COLOR_ORDER, palette } from '../../lib/colors';
+import { EFFORTS, EFFORT_HINT, MODELS, MODEL_HINT } from '../../lib/models';
 import { useStore } from '../../store';
 import { Icon } from '../Icon';
+import { Segmented } from '../config/ui';
 import { Modal } from './Modal';
 
 const ROWS = [PICKER_SHAPES.slice(0, 5), PICKER_SHAPES.slice(5, 10), PICKER_SHAPES.slice(10)];
@@ -16,6 +18,8 @@ export function CreateBotModal() {
   const [shape, setShape] = useState<AvatarShape>('heart');
   const [color, setColor] = useState<AvatarColor>('orange');
   const [mode, setMode] = useState<Bot['mode']>('personal');
+  const [model, setModel] = useState<Bot['model']>('default');
+  const [effort, setEffort] = useState<Bot['effort']>('medium');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const close = useCallback(() => setModal(null), [setModal]);
@@ -25,7 +29,7 @@ export function CreateBotModal() {
     if (!canCreate) return;
     setBusy(true); setError(null);
     try {
-      const { bot } = await api.createBot({ name: name.trim(), avatarShape: shape, avatarColor: color, mode });
+      const { bot } = await api.createBot({ name: name.trim(), avatarShape: shape, avatarColor: color, mode, model, effort });
       const st = useStore.getState();
       st.set({ bots: st.bots.some((b) => b.id === bot.id) ? st.bots : [...st.bots, bot] });
       st.selectBot(bot.id);
@@ -85,6 +89,18 @@ export function CreateBotModal() {
               <span className="mode-pick__title">Teammate</span>
               <span className="mode-pick__sub">Works with your whole team</span>
             </button>
+          </div>
+          <div className="model-pick">
+            <div className="model-pick__row">
+              <span className="model-pick__label">Thinking</span>
+              <Segmented label="Thinking level" value={effort} options={EFFORTS} onChange={setEffort} />
+            </div>
+            <div className="model-pick__hint">{EFFORT_HINT[effort]}</div>
+            <div className="model-pick__row">
+              <span className="model-pick__label">Model</span>
+              <Segmented label="Model" value={model} options={MODELS} onChange={setModel} />
+            </div>
+            <div className="model-pick__hint">{MODEL_HINT[model]} You can change both later in the Bot’s settings.</div>
           </div>
           {error && <div className="card__error">{error}</div>}
         </div>

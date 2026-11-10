@@ -3,26 +3,13 @@ import type { AvatarColor, AvatarShape, Bot, Memory, Routine, Skill } from '@sha
 import { BotAvatar, BotAvatarFor, PICKER_SHAPES } from '../../avatar/BotAvatar';
 import { COLOR_ORDER, botVars, palette } from '../../lib/colors';
 import { configApi, type BotSettingsBundle } from '../../lib/configApi';
+import { EFFORTS, EFFORT_HINT, MODELS, MODEL_HINT } from '../../lib/models';
 import { useConfigUI, useVersion, type BotSettingsTab } from '../../configStore';
 import { useStore } from '../../store';
 import { Icon } from '../Icon';
 import { Modal } from '../modals/Modal';
 import { Glyph } from './glyphs';
 import { ConfirmButton, Field, Segmented, Switch, nextRunLabel, shortDate } from './ui';
-
-const EFFORTS: { value: Bot['effort']; label: string }[] = [
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'Max' },
-];
-
-const EFFORT_HINT: Record<Bot['effort'], string> = {
-  low: 'Fastest replies. Good for quick lookups and chit-chat.',
-  medium: 'A good balance for most work.',
-  high: 'Thinks longer before acting. Better for tricky, multi-step work.',
-  xhigh: 'Thinks the longest. Slowest, for the hardest problems.',
-};
 
 export function BotSettingsModal() {
   const target = useConfigUI((s) => s.botSettings);
@@ -86,8 +73,8 @@ export function BotSettingsModal() {
 
 // ---------------------------------------------------------------------------
 
-type Draft = Pick<Bot, 'name' | 'label' | 'description' | 'instructions' | 'avatarShape' | 'avatarColor' | 'effort' | 'mode'>;
-const draftOf = (b: Bot): Draft => ({ name: b.name, label: b.label, description: b.description, instructions: b.instructions, avatarShape: b.avatarShape, avatarColor: b.avatarColor, effort: b.effort, mode: b.mode });
+type Draft = Pick<Bot, 'name' | 'label' | 'description' | 'instructions' | 'avatarShape' | 'avatarColor' | 'effort' | 'model' | 'mode'>;
+const draftOf = (b: Bot): Draft => ({ name: b.name, label: b.label, description: b.description, instructions: b.instructions, avatarShape: b.avatarShape, avatarColor: b.avatarColor, effort: b.effort, model: b.model, mode: b.mode });
 
 function GeneralTab({ bot, onClose }: { bot: Bot; onClose: () => void }) {
   const [draft, setDraft] = useState<Draft>(() => draftOf(bot));
@@ -150,8 +137,11 @@ function GeneralTab({ bot, onClose }: { bot: Bot; onClose: () => void }) {
         <Field label="Instructions" htmlFor="cfg-instructions" hint={`Standing guidance ${draft.name || 'this Bot'} always follows, like tone, priorities or things to avoid. It also learns from chat, skills and memories.`}>
           <textarea id="cfg-instructions" className="text-input cfg-textarea cfg-textarea--tall" rows={7} value={draft.instructions} maxLength={8000} placeholder="e.g. Keep updates to three bullets. Never email anyone outside the team without asking." onChange={(e) => put('instructions', e.target.value)} />
         </Field>
-        <Field label="Thinking effort" hint={EFFORT_HINT[draft.effort]}>
-          <Segmented label="Thinking effort" value={draft.effort} options={EFFORTS} onChange={(v) => put('effort', v)} />
+        <Field label="Thinking level" hint={EFFORT_HINT[draft.effort]}>
+          <Segmented label="Thinking level" value={draft.effort} options={EFFORTS} onChange={(v) => put('effort', v)} />
+        </Field>
+        <Field label="Model" hint={MODEL_HINT[draft.model]}>
+          <Segmented label="Model" value={draft.model} options={MODELS} onChange={(v) => put('model', v)} />
         </Field>
         <Field label="Used as">
           <Segmented label="Bot type" value={draft.mode} options={[{ value: 'personal', label: 'Personal assistant' }, { value: 'teammate', label: 'Teammate' }]} onChange={(v) => put('mode', v)} />

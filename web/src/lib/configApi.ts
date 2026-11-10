@@ -26,12 +26,12 @@ export interface BotSettingsBundle {
 export interface LibraryListing { status: 'ok' | 'error'; path: string; files: LibraryFile[]; error?: string }
 
 export interface ComputerDetails {
-  screens: { botId: string; display: number; lastUsed: number }[];
+  screens: { botId: string; url: string; lastUsed: number }[];
   maxScreens: number;
   idleMinutes: number;
 }
 
-export type BotPatch = Partial<Pick<Bot, 'name' | 'label' | 'description' | 'instructions' | 'avatarShape' | 'avatarColor' | 'effort' | 'mode'>>;
+export type BotPatch = Partial<Pick<Bot, 'name' | 'label' | 'description' | 'instructions' | 'avatarShape' | 'avatarColor' | 'effort' | 'model' | 'mode'>>;
 
 export const configApi = {
   settings: (botId: string) => req<BotSettingsBundle>('GET', `/bots/${botId}/settings`),
@@ -53,6 +53,7 @@ export const configApi = {
   tasks: () => req<{ tasks: Task[] }>('GET', '/tasks'),
   botTasks: (botId: string) => req<{ tasks: Task[] }>('GET', `/bots/${botId}/tasks`),
 
+  restartServer: () => req<{ ok: true }>('POST', '/restart'),
   computerDetails: () => req<ComputerDetails>('GET', '/computer'),
   sleep: (botId: string) => req<{ ok: boolean }>('POST', `/bots/${botId}/computer/stop`),
 

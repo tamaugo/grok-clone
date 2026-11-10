@@ -35,6 +35,13 @@
 .mode-pick__opt:hover { background: var(--color-bg-hover); }
 .mode-pick__opt.is-active { box-shadow: var(--color-primary) 0 0 0 1px inset; border-color: transparent; }
 .mode-pick__title { font-size: 13px; font-weight: 500; line-height: 18px; letter-spacing: 0.195px; color: var(--color-ink); }
+.model-pick { display: flex; flex-direction: column; gap: 6px; width: 407px; max-width: 100%; padding-top: 4px; }
+.model-pick__row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.model-pick__row .cfg-seg { align-self: center; flex-wrap: nowrap; }
+.model-pick__row .cfg-seg button { padding: 0 9px; white-space: nowrap; }
+.model-pick__label { font-size: 13px; font-weight: 500; line-height: 18px; letter-spacing: 0.195px; color: var(--color-ink); }
+.model-pick__hint { font-size: 12px; line-height: 16px; letter-spacing: 0.12px; color: var(--color-text-tertiary); text-align: right; }
+.model-pick__hint + .model-pick__row { margin-top: 4px; }
 .mode-pick__sub { font-size: 12px; line-height: 16px; letter-spacing: 0.12px; color: var(--color-text-tertiary); }
 
 /* Search palette: 641x561 */

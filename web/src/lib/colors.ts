@@ -8,7 +8,7 @@ export interface BotPalette { fill: string; bubble: string; action: string; hove
 
 export const BOT_COLORS: Record<AvatarColor, BotPalette> = {
   // Black follows the theme (ink on light, light ink on dark), so it uses tokens instead of hex.
-  black: { fill: '#000000', bubble: 'var(--color-bubble-user)', action: 'var(--color-primary)', hover: 'var(--color-bg-primary-hover)' },
+  black: { fill: 'var(--color-avatar-black)', bubble: 'var(--color-bubble-user)', action: 'var(--color-primary)', hover: 'var(--color-bg-primary-hover)' },
   brown: { fill: '#A06B39', bubble: '#86592E', action: '#9D6937', hover: '#86592E' },
   red: { fill: '#FB2B3E', bubble: '#C82532', action: '#E72E3B', hover: '#C82532' },
   orange: { fill: '#FD690F', bubble: '#D2550A', action: '#EE620D', hover: '#D2550A' },

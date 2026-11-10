@@ -4,6 +4,7 @@ import { appendRow, emitBot, getBotRow, getRow, setLive, toolRows, updateRow } f
 import { lastShotThumbnail } from '../computer.js';
 import { noteCheckinOutcome } from '../proactive.js';
 import type { MessageBody, ToolCallBody } from '../types.js';
+import { imagesNote } from '../uploads.js';
 import { systemPrompt } from './prompt.js';
 import { runClaude } from './claude.js';
 import { openTurn } from './mcp.js';
@@ -12,10 +13,10 @@ import { refreshOAuthTokens } from '../oauth.js';
 import { activityFor, MCP_PREFIX, type ToolCtx } from './tools.js';
 
 export type Trigger =
-  | { type: 'user'; text: string }
+  | { type: 'user'; text: string; images?: string[] }
   | { type: 'routine'; routineId: string; name: string; prompt: string }
   | { type: 'bot'; fromBotId: string; fromName: string; text: string; depth: number }
-  | { type: 'system'; text: string };
+  | { type: 'system'; text: string; images?: string[] };
 
 // ---------- per-bot serial queue ----------
 
@@ -83,10 +84,10 @@ function enqueueBotMessage(fromBotId: string, toBotId: string, text: string, dep
 
 function triggerText(t: Trigger): string {
   switch (t.type) {
-    case 'user': return t.text;
+    case 'user': return [t.text, imagesNote(t.images ?? [])].filter(Boolean).join('\n\n');
     case 'routine': return `[Routine "${t.name}" is running now. Do this:]\n${t.prompt}`;
     case 'bot': return `[Message from ${t.fromName}, another Bot on the team. Reply to them with send_to_bot if they asked you something.]\n${t.text}`;
-    case 'system': return `[System notice] ${t.text}`;
+    case 'system': return [`[System notice] ${t.text}`, imagesNote(t.images ?? [])].filter(Boolean).join('\n\n');
   }
 }
 

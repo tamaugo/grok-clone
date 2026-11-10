@@ -68,6 +68,16 @@ export interface MessageBody {
   /** Set when a message came from another bot or a routine rather than the user typing. */
   from?: { kind: 'bot' | 'routine'; id: string; name: string };
   citations?: { url: string; title?: string }[];
+  /** Images the user pasted or dropped in; files live in the chat's library/uploads folder. */
+  attachments?: Attachment[];
+}
+
+export interface Attachment {
+  kind: 'image';
+  /** File name inside library/uploads; served at /api/bots/:id/uploads/:name. */
+  name: string;
+  mime: string;
+  size: number;
 }
 
 export interface ToolCallBody {

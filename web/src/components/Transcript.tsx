@@ -2,6 +2,7 @@ import { Fragment, memo, useLayoutEffect, useMemo, useRef, useState } from 'reac
 import type { Bot, LiveState, MessageBody, Row, ToolCallBody } from '@shared/types';
 import { BotAvatar, BotAvatarFor } from '../avatar/BotAvatar';
 import { clock, dividerLabel } from '../lib/time';
+import { api } from '../lib/api';
 import { useStore } from '../store';
 import { ActivityLine } from './ActivityLine';
 import { CardRow } from './cards/Cards';
@@ -32,7 +33,7 @@ function buildItems(rows: Row[]): Item[] {
       continue;
     }
     if (b.type === 'message') {
-      if (!b.text && !b.streaming) continue;
+      if (!b.text && !b.streaming && !b.attachments?.length) continue;
       const side = b.role === 'user' && !b.from ? 'right' : 'left';
       const sender = b.from ? `${b.from.kind}:${b.from.id}` : b.role;
       const lastRow = last?.kind === 'group' ? last.rows[last.rows.length - 1] : null;
@@ -58,6 +59,20 @@ const Bubble = memo(function Bubble({ row, side, pos }: { row: Row; side: 'left'
   const b = row.body as MessageBody;
   return (
     <div className={`bubble-wrap is-${side}`}>
+      <div className="bubble-col">
+      {b.attachments && b.attachments.length > 0 && (
+        <div className="bubble-images">
+          {b.attachments.map((a) => {
+            const src = api.uploadUrl(row.botId, a.name);
+            return (
+              <a key={a.name} className="bubble-image" href={src} target="_blank" rel="noreferrer noopener" title="Open image">
+                <img src={src} alt="Attached image" loading="lazy" />
+              </a>
+            );
+          })}
+        </div>
+      )}
+      {(b.text || b.streaming || !b.attachments?.length) && (
       <div className={`bubble is-${side === 'right' ? 'user' : 'agent'}${pos}${b.streaming ? ' is-streaming' : ''}`}>
         {side === 'right' ? <div className="bubble__plain">{b.text}</div> : <Markdown text={b.text || ' '} />}
         {b.citations && b.citations.length > 0 && (
@@ -69,6 +84,8 @@ const Bubble = memo(function Bubble({ row, side, pos }: { row: Row; side: 'left'
             })}
           </div>
         )}
+      </div>
+      )}
       </div>
       <span className="bubble__time">{clock(row.createdAt)}</span>
     </div>

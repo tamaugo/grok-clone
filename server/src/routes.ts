@@ -14,6 +14,9 @@ import { addApp, appBySlug, listApps, removeApp, testApp, type App } from './app
 import { finishOAuth, startOAuth } from './oauth.js';
 import { deletePolicy, expirePending, listPolicies, resolveApproval } from './agent/approvals.js';
 import { BOT_EFFORTS, BOT_MODELS, type AvatarColor, type AvatarShape, type BotEffort, type BotModel } from './types.js';
+import fs from 'node:fs';
+import { bodyLimit } from 'hono/body-limit';
+import { findUpload, MAX_ATTACHMENTS, MAX_UPLOAD_BYTES, saveUpload, UploadError } from './uploads.js';
 
 export const api = new Hono<AuthVars>();
 
@@ -156,16 +159,49 @@ api.get('/bots/:id/rows', (c) => {
 api.post('/bots/:id/messages', async (c) => {
   const b = ownBot(c.get('user').id, c.req.param('id'));
   if (!b) return c.json({ error: 'not found' }, 404);
-  const { text } = await c.req.json<{ text: string }>();
-  if (!text?.trim()) return c.json({ error: 'empty' }, 400);
+  const { text: raw, attachments: names } = await c.req.json<{ text?: string; attachments?: string[] }>();
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (names !== undefined && !Array.isArray(names)) return c.json({ error: 'bad attachments' }, 400);
+  if ((names?.length ?? 0) > MAX_ATTACHMENTS) return c.json({ error: `At most ${MAX_ATTACHMENTS} images per message.` }, 400);
+  const files = [...new Set(names ?? [])].map((n) => findUpload(b.id, n));
+  if (files.some((f) => !f)) return c.json({ error: 'An attached image is missing. Remove it and paste it again.' }, 400);
+  const images = files as NonNullable<(typeof files)[number]>[];
+  if (!text && !images.length) return c.json({ error: 'empty' }, 400);
   // A new message supersedes anything the Bot was waiting on (as in Grok Bot).
   expirePending(b.id);
-  const row = appendRow(b.id, 'message', { type: 'message', role: 'user', text: text.trim() });
+  const attachments = images.map(({ abs: _abs, ...a }) => a);
+  const row = appendRow(b.id, 'message', { type: 'message', role: 'user', text, ...(attachments.length ? { attachments } : {}) });
+  const paths = images.map((f) => f.abs);
   // Group chats dispatch to their member Bots instead of running their own loop.
-  if (b.kind === 'room') dispatchRoomMessage(b.id, text.trim(), enqueue);
+  if (b.kind === 'room') dispatchRoomMessage(b.id, text, enqueue, paths);
   // Any pending question card is answered by a free-text message.
-  else enqueue(b.id, { type: 'user', text: text.trim() });
+  else enqueue(b.id, { type: 'user', text, images: paths });
   return c.json({ row });
+});
+
+/** Raw image body (Content-Type is ignored; the type is sniffed). Returns the attachment to send with a message. */
+api.post('/bots/:id/uploads', bodyLimit({ maxSize: MAX_UPLOAD_BYTES, onError: (c) => c.json({ error: 'Images can be at most 10 MB.' }, 413) }), async (c) => {
+  const b = ownBot(c.get('user').id, c.req.param('id'));
+  if (!b) return c.json({ error: 'not found' }, 404);
+  try {
+    return c.json({ attachment: saveUpload(b.id, new Uint8Array(await c.req.arrayBuffer())) });
+  } catch (e) {
+    if (e instanceof UploadError) return c.json({ error: e.message }, e.status);
+    throw e;
+  }
+});
+
+api.get('/bots/:id/uploads/:name', (c) => {
+  const b = ownBot(c.get('user').id, c.req.param('id'));
+  if (!b) return c.json({ error: 'not found' }, 404);
+  const f = findUpload(b.id, c.req.param('name'));
+  if (!f) return c.json({ error: 'not found' }, 404);
+  return c.body(new Uint8Array(fs.readFileSync(f.abs)), 200, {
+    'Content-Type': f.mime,
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    'Cache-Control': 'private, max-age=31536000, immutable',
+  });
 });
 
 api.post('/bots/:id/interrupt', (c) => {

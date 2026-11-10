@@ -38,7 +38,7 @@ export function createRoom(userId: string, name: string, memberIds: string[]) {
 }
 
 /** Called instead of the agent loop when the user posts in a room. */
-export function dispatchRoomMessage(roomId: string, text: string, enqueue: (botId: string, t: any) => void) {
+export function dispatchRoomMessage(roomId: string, text: string, enqueue: (botId: string, t: any) => void, images: string[] = []) {
   const room = db.prepare('SELECT * FROM bots WHERE id=?').get(roomId) as any;
   const members = roomMembers(roomId);
   if (!members.length) {
@@ -52,7 +52,8 @@ export function dispatchRoomMessage(roomId: string, text: string, enqueue: (botI
     .reverse()
     .map((r) => {
       const b = JSON.parse(r.body);
-      return `${b.from?.name ?? (b.role === 'user' ? 'User' : 'Bot')}: ${String(b.text).slice(0, 600)}`;
+      const pics = b.attachments?.length ? ` [${b.attachments.length} image${b.attachments.length > 1 ? 's' : ''}]` : '';
+      return `${b.from?.name ?? (b.role === 'user' ? 'User' : 'Bot')}: ${String(b.text).slice(0, 600)}${pics}`;
     })
     .join('\n');
   for (const m of responders) {
@@ -64,6 +65,7 @@ export function dispatchRoomMessage(roomId: string, text: string, enqueue: (botI
         `Recent group messages:\n${recent}\n\n` +
         `Reply to the group by calling post_to_group with group_name "${room.name}" (use your tools first if the request needs real work). ` +
         `Keep it short and don't repeat what other Bots already said. If you have nothing to add, call stay_silent. Do not write a normal reply.`,
+      images,
     });
   }
 }

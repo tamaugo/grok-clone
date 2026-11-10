@@ -26,6 +26,7 @@ A self-hosted Grok Bot clone. Bots run on the Claude Code CLI using a Claude sub
   - Read-only actions run without asking.
   - "Always allow" rules can be removed in Settings → Permissions.
 - **Rebuilt Grok Bot features.** Routines, check-ins, tasks, memories, skills, subagents, groups, the Bot-to-Bot messages, the library, ask_user question cards, connect-app cards and dictation (browser speech recognition, ⌘/Ctrl+D).
+- **Reply bubbles.** A turn with tool calls shows at most two Bot bubbles. The text before the first tool call (the "on it" acknowledgement) is the first bubble. Everything written after that is one reply bubble, with segments joined by a blank line. The merging happens in `TranscriptWriter` (server/src/agent/loop.ts). When a new segment starts and tool rows or cards were added since the last one, the reply row moves to the end of the transcript: the old row is blanked and deleted, and a new row is created with the combined text. So the reply always sits below the turn's tool steps and any ask_user card. History, the live stream and reloads all show the same thing. Unread goes up once for the reply, not once per segment. This was verified with a stub CLI (text → tool → text → tool → text gave 2 Bot rows), live in the browser and after a reload.
 - **UI.** It is restored one-to-one from the original (commit 7ee6a7e): computer viewer, Computer card, cards, Connect Apps modal, and the Settings pages General / Computer / Permissions / Connected apps.
 - **Verified on the VM.**
   - Chat turns and session resume.
